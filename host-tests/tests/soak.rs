@@ -160,3 +160,62 @@ fn soak_mutated_sig_rejects() {
     );
     assert_eq!(accepted, 0, "{accepted} mutated sigs were accepted");
 }
+
+#[test]
+#[ignore = "soak test; run with `cargo test --release -- --ignored`"]
+fn soak_differential_vs_pqclean() {
+    // Differential test against PQClean (pqcrypto-falcon's underlying C
+    // implementation, audited and CI-checked against the NIST KATs upstream).
+    //
+    // For each random `(pk, sig, msg)` triple, both verifiers run; their
+    // accept/reject answers must agree. A single disagreement on any
+    // direction is a bug:
+    //   - we accept where PQClean rejects → false acceptance, security bug.
+    //   - we reject where PQClean accepts → false rejection (uptime bug).
+    //
+    // PQClean's `from_bytes` for `PublicKey` / `DetachedSignature` may itself
+    // reject a malformed buffer before any cryptographic check; we treat that
+    // as "PQClean rejects" since the question we're asking is the same on
+    // both sides — does this byte sequence verify against this msg/pk.
+    let n = iters("SOAK_DIFFERENTIAL", 100_000_000);
+    println!("soak_differential_vs_pqclean: {n} iterations");
+    let start = Instant::now();
+    let disagreements: usize = (0..n)
+        .into_par_iter()
+        .with_min_len(4096)
+        .map(|i| {
+            let mut rng = Rng::new(i as u64 + 1);
+            let mut pk_bytes = [0u8; FALCON_512_PUBKEY_LEN];
+            let mut sig_bytes = [0u8; FALCON_512_SIGNATURE_LEN];
+            let mut msg = [0u8; 32];
+            rng.fill(&mut pk_bytes);
+            rng.fill(&mut sig_bytes);
+            rng.fill(&mut msg);
+
+            let ours = Falcon512Signature::from(sig_bytes)
+                .verify(&msg, &Falcon512Pubkey::from(pk_bytes));
+
+            let theirs = match (
+                falcon512::PublicKey::from_bytes(&pk_bytes),
+                falcon512::DetachedSignature::from_bytes(&sig_bytes),
+            ) {
+                (Ok(pk), Ok(sig)) => {
+                    falcon512::verify_detached_signature(&sig, &msg, &pk).is_ok()
+                }
+                _ => false,
+            };
+
+            if ours != theirs { 1 } else { 0 }
+        })
+        .sum();
+    let elapsed = start.elapsed();
+    println!(
+        "soak_differential_vs_pqclean: {n} iters in {:.1}s ({:.0} iter/s)",
+        elapsed.as_secs_f64(),
+        n as f64 / elapsed.as_secs_f64()
+    );
+    assert_eq!(
+        disagreements, 0,
+        "{disagreements} verdict disagreements with PQClean"
+    );
+}
