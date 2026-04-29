@@ -1,0 +1,164 @@
+# solana-falcon512
+
+Pure-Rust **Falcon-512 signature verification**, optimised for Solana SBF programs.
+
+- `no_std`, allocation-free, zero non-essential dependencies.
+- Compressed-format signatures (header byte `0x39`) only.
+- ~255–370k compute units per verify on Solana SBF, depending on message length and whether the pubkey is precomputed. (See [Benchmarks](#benchmarks).)
+- Cross-checked against NIST SHAKE-256 KATs and 1,000,000 PQClean-generated signatures with zero failures.
+
+## Usage
+
+### Runtime pubkey
+
+```rust
+use solana_falcon512::{Falcon512Pubkey, Falcon512Signature};
+
+let pubkey = Falcon512Pubkey::try_from(&pk_bytes[..])?;
+let signature = Falcon512Signature::try_from(&sig_bytes[..])?;
+let ok = signature.verify(message, &pubkey);
+```
+
+### Compile-time prepared pubkey (recommended for Solana programs)
+
+If your program embeds a fixed pubkey, prepare it at compile time. `prepare_pubkey()` is a `const fn` — the decoded NTT-form pubkey is baked into the binary, saving ~99k CUs on every verify:
+
+```rust
+use solana_falcon512::{Falcon512Pubkey, Falcon512PreparedPubkey, Falcon512Signature};
+
+const PREPARED: Falcon512PreparedPubkey =
+    Falcon512Pubkey::from_bytes(*include_bytes!("../keys/falcon.pk"))
+        .prepare_pubkey();
+
+let ok = signature.verify_with_prepared(message, &PREPARED);
+```
+
+A malformed pubkey will fail a compile time rather than panic at runtime.
+
+### Runtime prepared pubkey (multi-tenant programs)
+
+If your program verifies against a different pubkey per account/user — i.e.
+the pubkey isn't known at compile time — store the **prepared** form on-chain
+instead of the raw 897-byte wire encoding. Each verify then loads the NTT-form
+pubkey directly and skips the ~99k-CU decode + forward NTT.
+
+The trade-off is 2048 bytes of account data instead of 897 bytes (about 1.1 KB
+extra rent per account). Anything that gets verified multiple times
+recoups that cost in the long run in saved compute.
+
+```rust
+use solana_falcon512::{
+    Falcon512PreparedPubkey, Falcon512Pubkey, Falcon512Signature,
+    FALCON_512_PREPARED_PUBKEY_LEN,
+};
+
+// On registration: prepare once, write the 2048-byte form into the account.
+let prepared = Falcon512Pubkey::try_from(&pk_wire_bytes[..])?.prepare_pubkey();
+account_data.copy_from_slice(&prepared.as_bytes());
+
+// On verify: load the 2048-byte buffer, deserialise, verify — no NTT prep.
+let prepared = Falcon512PreparedPubkey::try_from(&account_data[..])?;
+let ok = signature.verify_with_prepared(message, &prepared);
+```
+
+## Compatibility
+
+| Variant                                | Supported |
+| -------------------------------------- | --------- |
+| Falcon-512 compressed (`0x39`)         | ✅        |
+| Falcon-512 padded (`0x49`)             | ❌        |
+| Falcon-512 CT format                   | ❌        |
+| Falcon-1024                            | ❌        |
+| Sign / keygen                          | ❌ (verify only — generate keys with PQClean / `pqcrypto-falcon`) |
+
+## Benchmarks
+
+Measured via Mollusk SVM, default optimised build:
+
+| Path                                 | CUs      |
+| ------------------------------------ | -------- |
+| `verify_with_prepared` (success)     | ~272k    |
+| `verify_with_prepared` (rejection)   | ~255k    |
+| `verify` (raw pubkey)                | ~370k    |
+
+`set_compute_unit_limit(290_000)` is a safe budget for the prepared path.
+
+## Project layout
+
+- `src/` — verify library (`no_std`, rlib only). Zero non-essential deps.
+- `host-tests/` — separate crate hosting the integration tests
+  (e2e / fuzz / soak) so the main crate doesn't pull in `pqcrypto-falcon`,
+  `rayon`, etc. as dev-deps.
+- `program/` — minimal Solana program demonstrating in-program verification
+  with a baked-in prepared pubkey.
+- `program/tests/` — Mollusk SBF tests against the actual `.so`.
+
+## Testing
+
+```sh
+cargo test --workspace                              # 16 host tests (lib unit + e2e + fuzz)
+cargo test --workspace --release -- --ignored       # 1M-iter soak (a few minutes)
+(cd program && cargo test-sbf)                      # SBF tests via Mollusk
+```
+
+### Regenerating the example keypair
+
+The Solana program in `program/` embeds a Falcon-512 keypair at
+`program/tests/fixtures/falcon.{pk,sk}` for its compile-time prepared pubkey
+and Mollusk tests. To regenerate:
+
+```rust
+use pqcrypto_falcon::falcon512;
+use pqcrypto_traits::sign::{PublicKey, SecretKey};
+
+let (pk, sk) = falcon512::keypair();
+std::fs::write("program/tests/fixtures/falcon.pk", pk.as_bytes()).unwrap();
+std::fs::write("program/tests/fixtures/falcon.sk", sk.as_bytes()).unwrap();
+```
+
+## Security
+
+**This crate is not audited.** Use at your own risk for protecting anything of value.
+
+Verification operates exclusively on public data (signature, pubkey, message), so the implementation is deliberately not constant-time — it short-circuits on header / length / decompression failures and on the running L2 norm exceeding the bound. None of those leak secret information.
+
+For the underlying cryptography see [Falcon][falcon] and [NIST FN-DSA / FIPS 206][fndsa].
+
+[falcon]: https://falcon-sign.info
+[fndsa]: https://csrc.nist.gov/pubs/fips/206/ipd
+
+### Common footguns
+
+#### 1. Wire-format validity does not constitute a valid pubkey
+
+`Falcon512Pubkey::prepare_pubkey` only validates the wire format (header byte, 14-bit packed coefficients within `[0, q)`, no trailing bits). Cryptographically confirming that a pubkey `h` came from real key generation — i.e. that `h = g · f⁻¹ mod q` for some short `(f, g)` trapdoor — is impossible without the trapdoor itself. Thus, a user can submit any 897-byte buffer that parses, even one with no corresponding secret key. If this is important for your use case, consider verifying that a key is legitimate with a signature challenge.
+
+#### 2. Signatures are non-deterministic and non-unique
+
+Falcon signing samples a fresh 40-byte nonce per signature, so `sign(sk, msg)` returns a *different* 666-byte signature every time. The same `(msg, pk)` has many valid signatures. As such, just as is the case with other signature schemes, it is important not to ever dedup by signature value.
+
+#### 3. No built-in domain separation
+
+`hash_to_point` digests `SHAKE256(nonce ‖ message)` with no extra prefix. If the same Falcon keypair is used across two protocols (e.g. authentication and payments), a signature produced for protocol A may be replayable in protocol B if their message formats happen to overlap. Consider using domain separation in your message to avoid this issue.
+
+#### 4. Compressed format only
+
+This crate only accepts the standard compressed signature (header `0x39`) format of Falcon512. Padded (`0x49`) and CT-format signatures are deemed invalid.
+
+#### 5. Solana transaction size
+
+A raw Falcon-512 verification touches ~666 bytes of signature + ~897 bytes of pubkey, exceeding Solana's **1232-byte legacy-transaction limit**. Consider storing a prepared pubkey in a PDA to get around this limitation.
+
+#### 6. Security level
+
+Falcon-512 targets NIST PQC level 1: ~128-bit classical / ~117-bit post-quantum security which is suitable for short-to-medium-lifetime authorisation. Consider periodically rotating keys.
+
+## Warranty
+
+**None.** This software is provided strictly "AS IS", without warranty of any kind, express or implied — including but not limited to warranties of merchantability, fitness for a particular purpose, correctness, security, or non-infringement. The authors and contributors accept no liability for any loss, damage, or unintended consequence arising from its use.
+
+In plain English: if you deploy this and lose funds, that is **entirely your problem.** Audit it, test it against your threat model, and budget for the possibility that it's wrong.
+
+## License
+
+MIT
