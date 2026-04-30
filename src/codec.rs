@@ -100,9 +100,7 @@ pub fn decompress_signature(buf: &[u8], s2: &mut [i16; N]) -> bool {
     while i + 8 <= buf.len() {
         // SAFETY: `i + 8 <= buf.len()` (loop guard) and `buf` is a valid
         // slice. Unaligned u64 read is supported on SBF.
-        let chunk = unsafe {
-            (buf.as_ptr().add(i) as *const u64).read_unaligned()
-        };
+        let chunk = unsafe { (buf.as_ptr().add(i) as *const u64).read_unaligned() };
         if chunk != 0 {
             return false;
         }

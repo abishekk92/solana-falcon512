@@ -4,7 +4,9 @@ Pure-Rust **Falcon-512 signature verification**, optimised for Solana SBF progra
 
 - `no_std`, allocation-free, zero non-essential dependencies.
 - Compressed-format signatures (header byte `0x39`) only.
-- ~255–370k compute units per verify on Solana SBF, depending on message length and whether the pubkey is precomputed. (See [Benchmarks](#benchmarks).)
+- **~196k compute units per verify** on Solana SBF with a prepared pubkey. (See [Benchmarks](#benchmarks).)
+- Zero-copy borrow APIs (`from_ref`, `try_from_slice`) so signatures and prepared pubkeys can be verified directly from runtime input / account data with no memcpy.
+- Prepared pubkey storage: **1024 bytes** (one u16 per NTT coefficient, since each value is `< Q < 2^14`).
 - Cross-checked against NIST SHAKE-256 KATs and 1,000,000 PQClean-generated signatures with zero failures.
 
 ## Usage
@@ -33,7 +35,7 @@ const PREPARED: Falcon512PreparedPubkey =
 let ok = signature.verify_with_prepared(message, &PREPARED);
 ```
 
-A malformed pubkey will fail a compile time rather than panic at runtime.
+A malformed pubkey will fail at compile time rather than panic at runtime.
 
 ### Runtime prepared pubkey (multi-tenant programs)
 
@@ -42,9 +44,9 @@ the pubkey isn't known at compile time — store the **prepared** form on-chain
 instead of the raw 897-byte wire encoding. Each verify then loads the NTT-form
 pubkey directly and skips the ~99k-CU decode + forward NTT.
 
-The trade-off is 2048 bytes of account data instead of 897 bytes (about 1.1 KB
-extra rent per account). Anything that gets verified multiple times
-recoups that cost in the long run in saved compute.
+The trade-off is 1024 bytes of account data instead of 897 bytes (about
+127 bytes extra rent per account). Anything that gets verified multiple times
+recoups that cost easily in saved compute.
 
 ```rust
 use solana_falcon512::{
@@ -52,13 +54,43 @@ use solana_falcon512::{
     FALCON_512_PREPARED_PUBKEY_LEN,
 };
 
-// On registration: prepare once, write the 2048-byte form into the account.
+// On registration: prepare once, write the 1024-byte form into the account.
 let prepared = Falcon512Pubkey::try_from(&pk_wire_bytes[..])?.prepare_pubkey();
-account_data.copy_from_slice(&prepared.as_bytes());
+account_data.copy_from_slice(prepared.as_bytes());
 
-// On verify: load the 2048-byte buffer, deserialise, verify — no NTT prep.
-let prepared = Falcon512PreparedPubkey::try_from(&account_data[..])?;
-let ok = signature.verify_with_prepared(message, &prepared);
+// On verify: borrow the prepared pubkey directly out of account data — no
+// copy, no allocation. `try_from_slice` validates length + 2-byte alignment
+// (Solana account data is 8-byte aligned by ABI, so this always passes).
+let prepared = Falcon512PreparedPubkey::try_from_slice(&account_data[..])?;
+let signature = Falcon512Signature::try_from_slice(sig_bytes)?;
+let ok = signature.verify_with_prepared(message, prepared);
+```
+
+### Zero-copy borrow APIs
+
+All three byte-array wrappers are `#[repr(transparent)]` and expose
+zero-copy borrow constructors:
+
+```rust
+// From a fixed-size array reference (no length check, no copy):
+let sig: &Falcon512Signature = Falcon512Signature::from_ref(&sig_bytes_array);
+let pk:  &Falcon512Pubkey    = Falcon512Pubkey::from_ref(&pk_bytes_array);
+let prepared: &Falcon512PreparedPubkey =
+    unsafe { Falcon512PreparedPubkey::from_ref(&pp_bytes_array) }; // 2-byte aligned
+
+// From a slice (length checked + alignment checked, still no copy):
+let sig      = Falcon512Signature::try_from_slice(&sig_slice)?;
+let pk       = Falcon512Pubkey::try_from_slice(&pk_slice)?;
+let prepared = Falcon512PreparedPubkey::try_from_slice(&pp_slice)?;
+```
+
+The Solana entrypoint pattern below avoids the 666-byte signature memcpy and
+the 1024-byte prepared-pubkey memcpy that owned-array constructors would
+emit — the verify operates directly on the runtime-provided buffers:
+
+```rust
+let signature = Falcon512Signature::from_ref(sig_bytes); // borrowed from input
+signature.verify_with_prepared(message, &PREPARED_PUBKEY)
 ```
 
 ## Compatibility
@@ -71,17 +103,47 @@ let ok = signature.verify_with_prepared(message, &prepared);
 | Falcon-1024                            | ❌        |
 | Sign / keygen                          | ❌ (verify only — generate keys with PQClean / `pqcrypto-falcon`) |
 
+### Prepared pubkey wire format
+
+`Falcon512PreparedPubkey::as_bytes` / `from_bytes` use a stable
+**1024-byte little-endian `[u16; 512]`** layout: each coefficient is the
+forward-NTT of `h` pre-multiplied by `N⁻¹ mod Q`, then narrowed to u16
+(every value fits in 14 bits since `Q < 2^14`). Folding `N⁻¹` into the
+prepared form lets the runtime skip the per-verify `1/N` inverse-NTT
+scaling pass.
+
+This format is **not interoperable** with other Falcon implementations'
+"NTT-form" pubkeys — those typically store `NTT(h)` without the `N⁻¹`
+factor and as u32. If you serialise a prepared pubkey here, you must read
+it back with this crate.
+
 ## Benchmarks
 
-Measured via Mollusk SVM, default optimised build:
+Measured via Mollusk SVM, default optimised build (`lto = "fat"`,
+`opt-level = 3`, `codegen-units = 1`), with the entrypoint borrowing the
+signature in place via `Falcon512Signature::from_ref`:
 
 | Path                                 | CUs      |
 | ------------------------------------ | -------- |
-| `verify_with_prepared` (success)     | ~272k    |
-| `verify_with_prepared` (rejection)   | ~255k    |
-| `verify` (raw pubkey)                | ~370k    |
+| `verify_with_prepared` (success)     | ~196k    |
+| `verify_with_prepared` (rejection)   | ~196k    |
+| `verify` (raw pubkey)                | ~280k    |
 
-`set_compute_unit_limit(290_000)` is a safe budget for the prepared path.
+`set_compute_unit_limit(210_000)` is a safe budget for the prepared path.
+
+Notable points along the optimisation curve (start of the journey vs. now,
+`verify_with_prepared`):
+
+| Stage                                                  | CUs      |
+| ------------------------------------------------------ | -------- |
+| Naive port                                             | ~283k    |
+| u64-throughout NTT butterflies                         | 265k     |
+| `assert_unchecked` for SBF bounds-check elision        | 248k     |
+| Lazy-reduction (drop intermediate `% q` where the next mul·zeta·% q absorbs) | 222k     |
+| Fuse inv-NTT last level with L2-norm loop              | 213k     |
+| Pre-fold `N_INV` into prepared pubkey                  | 209k     |
+| Lazy-`t` at last forward NTT level                     | 196k     |
+| Zero-copy `from_ref` for signature in entrypoint       | **196k** |
 
 ## Project layout
 
@@ -96,10 +158,17 @@ Measured via Mollusk SVM, default optimised build:
 ## Testing
 
 ```sh
-cargo test --workspace                              # 16 host tests (lib unit + e2e + fuzz)
-cargo test --workspace --release -- --ignored       # 1M-iter soak (a few minutes)
+cargo test --workspace                              # lib unit + e2e + fuzz
+cargo test --workspace --release -- --ignored       # 100k-iter soak (~40s),
+                                                    # plus PQClean differential and
+                                                    # 10M-iter random-rejection soak
 (cd program && cargo test-sbf)                      # SBF tests via Mollusk
 ```
+
+The e2e tests include a `prepared_pubkey_roundtrip_matches_direct_verify`
+case that prepares a pubkey at runtime, serialises via `as_bytes`,
+deserialises via `from_bytes`, and confirms `verify_with_prepared` agrees
+with direct `verify` for valid signatures and rejects for tampered ones.
 
 ### Regenerating the example keypair
 
@@ -147,7 +216,7 @@ This crate only accepts the standard compressed signature (header `0x39`) format
 
 #### 5. Solana transaction size
 
-A raw Falcon-512 verification touches ~666 bytes of signature + ~897 bytes of pubkey, exceeding Solana's **1232-byte legacy-transaction limit**. Consider storing a prepared pubkey in a PDA to get around this limitation.
+A raw Falcon-512 verification touches ~666 bytes of signature + ~897 bytes of pubkey, exceeding Solana's **1232-byte legacy-transaction limit**. Consider storing a prepared pubkey in a PDA (1024 bytes — fits within the typical PDA size budget) to get around this limitation: only the 666-byte signature then needs to come in via the instruction.
 
 #### 6. Security level
 

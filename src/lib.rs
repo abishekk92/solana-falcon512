@@ -241,9 +241,7 @@ impl Falcon512PreparedPubkey {
     /// satisfies this. If you slice into a misaligned position, prefer
     /// [`Falcon512PreparedPubkey::from_bytes`] which copies into an aligned
     /// stack buffer.
-    pub const unsafe fn from_ref(
-        bytes: &[u8; FALCON_512_PREPARED_PUBKEY_LEN],
-    ) -> &Self {
+    pub const unsafe fn from_ref(bytes: &[u8; FALCON_512_PREPARED_PUBKEY_LEN]) -> &Self {
         // SAFETY: caller guarantees 2-byte alignment.
         // `Falcon512PreparedPubkey` is `#[repr(transparent)]` over
         // `[u16; N]`, which has the same size as `[u8; LEN]` (= N*2).
@@ -267,7 +265,7 @@ impl Falcon512PreparedPubkey {
             .map_err(|_| ProgramError::InvalidArgument)?;
         // Alignment check — `from_ref` requires 2-byte alignment for the
         // u16 reinterpret.
-        if (array.as_ptr() as usize) % core::mem::align_of::<u16>() != 0 {
+        if !(array.as_ptr() as usize).is_multiple_of(core::mem::align_of::<u16>()) {
             return Err(ProgramError::InvalidArgument);
         }
         // SAFETY: length matches (`try_into` succeeded) and alignment
@@ -304,9 +302,7 @@ impl Falcon512PreparedPubkey {
         // *down* from u16 to u8 reference is sound. On little-endian
         // (compile-time-checked via `cfg(target_endian = "little")`) the
         // raw byte order matches `to_le_bytes` element-wise.
-        unsafe {
-            &*(self as *const Self as *const [u8; FALCON_512_PREPARED_PUBKEY_LEN])
-        }
+        unsafe { &*(self as *const Self as *const [u8; FALCON_512_PREPARED_PUBKEY_LEN]) }
     }
 
     /// Serialise to an owned 1024-byte buffer. Always available (works on

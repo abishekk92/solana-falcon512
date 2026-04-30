@@ -156,7 +156,6 @@ macro_rules! gs_butterfly_lazy {
     }};
 }
 
-
 // Forward NTT levels with len = N/4 down to len = 2 (everything except the
 // first len=N/2 level and the final len=1 level). The first level is
 // handled separately so it can either operate in-place (`ntt_main_levels`)
@@ -529,12 +528,7 @@ pub const fn inv_ntt_last_level(r: &mut [u32; N]) {
 ///   raw = (c[i] + Q − buf[i]) mod Q
 ///   |s1c| = min(raw, Q − raw)
 ///   norm += |s1c|² + s2[i]²
-pub fn last_level_fused_norm(
-    buf: &[u32; N],
-    c: &[u16; N],
-    s2: &[i16; N],
-    bound: u64,
-) -> bool {
+pub fn last_level_fused_norm(buf: &[u32; N], c: &[u16; N], s2: &[i16; N], bound: u64) -> bool {
     let q = Q as u64;
     let half_q = q / 2;
     let zeta = INV_ZETAS[1] as u64;
@@ -568,7 +562,10 @@ pub fn last_level_fused_norm(
         // infer the computation fits u32 and emit `lsh 0x20 ; rsh 0x20`
         // zero-extension pairs around the subtract.
         let raw_lo = ((c[j] as u64).wrapping_add(big_q).wrapping_sub(new_lo)) % q;
-        let raw_hi = ((c[j + N / 2] as u64).wrapping_add(big_q).wrapping_sub(new_hi)) % q;
+        let raw_hi = ((c[j + N / 2] as u64)
+            .wrapping_add(big_q)
+            .wrapping_sub(new_hi))
+            % q;
         let s1c_lo = if raw_lo > half_q { q - raw_lo } else { raw_lo };
         let s1c_hi = if raw_hi > half_q { q - raw_hi } else { raw_hi };
 
