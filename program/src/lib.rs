@@ -54,7 +54,10 @@ pub unsafe extern "C" fn entrypoint(input: *mut u8) -> u64 {
     let Some((sig_bytes, message)) = data.split_first_chunk::<FALCON_512_SIGNATURE_LEN>() else {
         return ProgramError::InvalidInstructionData.into();
     };
-    let signature = Falcon512Signature::from(*sig_bytes);
+    // Borrow the signature in place — `from_ref` is a no-op cast (no copy)
+    // since `Falcon512Signature` is `#[repr(transparent)]`. Saves ~200 CU
+    // vs `Falcon512Signature::from(*sig_bytes)` which memcpy's 666 bytes.
+    let signature = Falcon512Signature::from_ref(sig_bytes);
 
     if signature.verify_with_prepared(message, &PREPARED_PUBKEY) {
         0

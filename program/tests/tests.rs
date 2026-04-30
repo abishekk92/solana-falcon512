@@ -1,19 +1,19 @@
 use mollusk_svm::Mollusk;
-use pqcrypto_falcon::falcon512;
-use pqcrypto_traits::sign::{DetachedSignature, SecretKey};
 use solana_address::Address;
 use solana_instruction::Instruction;
 
-const SK_BYTES: &[u8] = include_bytes!("fixtures/falcon.sk");
 const SIG_LEN: usize = 666;
 
-fn sign_ix_data(msg: &[u8]) -> Vec<u8> {
-    let sk = falcon512::SecretKey::from_bytes(SK_BYTES).unwrap();
-    let sig = falcon512::detached_sign(msg, &sk);
-    let mut sig_padded = [0u8; SIG_LEN];
-    sig_padded[..sig.as_bytes().len()].copy_from_slice(sig.as_bytes());
+// Static fixture — fixed (pubkey, signature, message) triple. Fully
+// deterministic CU measurement: every test run signs exactly the same bytes
+// because the signature is baked into the repo. Regenerate via
+// `cargo test --release -p host-tests --test fixtures -- --ignored --nocapture`.
+const SIG: [u8; SIG_LEN] = *include_bytes!("fixtures/sample_sig.bin");
+const MSG: &[u8] = b"deterministic falcon-512 verify benchmark";
+
+fn build_ix_data(sig: [u8; SIG_LEN], msg: &[u8]) -> Vec<u8> {
     let mut data = Vec::with_capacity(SIG_LEN + msg.len());
-    data.extend_from_slice(&sig_padded);
+    data.extend_from_slice(&sig);
     data.extend_from_slice(msg);
     data
 }
@@ -22,26 +22,17 @@ fn sign_ix_data(msg: &[u8]) -> Vec<u8> {
 // `target/deploy` directory; Mollusk picks the `.so` up from there.
 fn make_mollusk() -> (Mollusk, Address) {
     let program_id = Address::new_unique();
-    let mollusk = Mollusk::new(&program_id, "program");
+    let mollusk = Mollusk::new(&program_id, "../target/deploy/program");
     (mollusk, program_id)
 }
 
 #[test]
-fn verify_random_message() {
+fn verify_fixed_message() {
     let (mollusk, program_id) = make_mollusk();
-    let mut msg = [0u8; 64];
-    let mut state: u64 = 0x00C0_FFEE_DEAD_BEEF;
-    for b in msg.iter_mut() {
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        *b = (state >> 56) as u8;
-    }
-    let data = sign_ix_data(&msg);
     let ix = Instruction {
         program_id,
         accounts: vec![],
-        data,
+        data: build_ix_data(SIG, MSG),
     };
     let result = mollusk.process_instruction(&ix, &[]);
     assert!(
@@ -50,7 +41,7 @@ fn verify_random_message() {
         result.program_result
     );
     println!(
-        "verify_random_message OK — compute units consumed: {}",
+        "verify_fixed_message OK — compute units consumed: {}",
         result.compute_units_consumed
     );
 }
@@ -58,12 +49,12 @@ fn verify_random_message() {
 #[test]
 fn rejects_tampered_message() {
     let (mollusk, program_id) = make_mollusk();
-    let mut data = sign_ix_data(b"original message");
-    data[SIG_LEN] ^= 0x01;
+    let mut tampered_msg = MSG.to_vec();
+    tampered_msg[0] ^= 0x01;
     let ix = Instruction {
         program_id,
         accounts: vec![],
-        data,
+        data: build_ix_data(SIG, &tampered_msg),
     };
     let result = mollusk.process_instruction(&ix, &[]);
     assert!(
@@ -76,12 +67,13 @@ fn rejects_tampered_message() {
 #[test]
 fn rejects_tampered_signature() {
     let (mollusk, program_id) = make_mollusk();
-    let mut data = sign_ix_data(b"some message");
-    data[100] ^= 0x01;
+    let mut tampered_sig = SIG;
+    // Flip a bit inside the signature payload (past header + nonce).
+    tampered_sig[100] ^= 0x01;
     let ix = Instruction {
         program_id,
         accounts: vec![],
-        data,
+        data: build_ix_data(tampered_sig, MSG),
     };
     let result = mollusk.process_instruction(&ix, &[]);
     assert!(
