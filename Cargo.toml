@@ -1,6 +1,6 @@
 [package]
 name = "solana-falcon512"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 description = "Pure-Rust Falcon-512 signature verification, optimised for Solana SBF programs."
 repository = "https://github.com/blueshift-gg/solana-falcon512"
@@ -13,10 +13,10 @@ readme = "README.md"
 crate-type = ["rlib"]
 
 [workspace]
-members = ["host-tests"]
-# Exclude the program/ subcrate from this workspace — it builds only via
-# cargo-build-sbf with its own profile settings.
-exclude = ["program"]
+members = [
+    "host-tests",
+    "program"
+]
 
 [dependencies]
 solana-program-error = "3.0.1"

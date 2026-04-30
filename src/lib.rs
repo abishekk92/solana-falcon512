@@ -72,10 +72,12 @@ pub const FALCON_512_PUBKEY_LEN: usize = 897;
 /// encoded portion is shorter must zero-pad the trailing bytes.
 pub const FALCON_512_SIGNATURE_LEN: usize = 666;
 
-/// Serialised length of a [`Falcon512PreparedPubkey`]: 512 little-endian `u32`
-/// coefficients = 2048 bytes. Use this as the account-data size when storing
-/// a prepared pubkey on-chain to amortise the ~99k CU NTT step.
-pub const FALCON_512_PREPARED_PUBKEY_LEN: usize = N * 4;
+/// Serialised length of a [`Falcon512PreparedPubkey`]: 512 little-endian `u16`
+/// coefficients = 1024 bytes. Each coefficient is `h_pk_NTT[i] · N_INV mod Q`
+/// which is `< Q < 2^14`, so u16 is enough — halves the on-chain rent vs
+/// storing as u32, and SBF `ldxh` costs the same as `ldxw` so there's no
+/// CU penalty.
+pub const FALCON_512_PREPARED_PUBKEY_LEN: usize = N * 2;
 
 pub(crate) const N: usize = 512;
 pub(crate) const Q: u32 = 12289;
@@ -87,7 +89,12 @@ const SIG_HEADER: u8 = 0x39;
 
 /// Wire-encoded Falcon-512 public key (header byte `0x09` + 14-bit-packed
 /// polynomial `h ∈ Z_q[x] / (x^512 + 1)`).
+///
+/// `#[repr(transparent)]` so a `&[u8; FALCON_512_PUBKEY_LEN]` can be
+/// re-borrowed as a `&Falcon512Pubkey` without a copy via
+/// [`Falcon512Pubkey::from_ref`].
 #[derive(Clone, Eq, PartialEq)]
+#[repr(transparent)]
 pub struct Falcon512Pubkey([u8; FALCON_512_PUBKEY_LEN]);
 
 impl TryFrom<&[u8]> for Falcon512Pubkey {
@@ -108,6 +115,27 @@ impl From<[u8; FALCON_512_PUBKEY_LEN]> for Falcon512Pubkey {
 }
 
 impl Falcon512Pubkey {
+    /// Borrow a `&[u8; FALCON_512_PUBKEY_LEN]` as a `&Falcon512Pubkey` with
+    /// no copy. Useful when the pubkey bytes already live somewhere (e.g.
+    /// a Solana account) and you want to avoid a 897-byte memcpy.
+    pub const fn from_ref(bytes: &[u8; FALCON_512_PUBKEY_LEN]) -> &Self {
+        // SAFETY: `Falcon512Pubkey` is `#[repr(transparent)]` over
+        // `[u8; FALCON_512_PUBKEY_LEN]`. Both have the same layout,
+        // alignment (1), and validity invariants, so the cast is sound.
+        unsafe { &*(bytes as *const [u8; FALCON_512_PUBKEY_LEN] as *const Self) }
+    }
+
+    /// Borrow an arbitrary-length `&[u8]` as a `&Falcon512Pubkey`, returning
+    /// `Err(InvalidArgument)` if the slice isn't exactly 897 bytes. Combines
+    /// length check + [`from_ref`](Self::from_ref) into one safe call —
+    /// pure references throughout, zero copies.
+    pub fn try_from_slice(bytes: &[u8]) -> Result<&Self, ProgramError> {
+        let array: &[u8; FALCON_512_PUBKEY_LEN] = bytes
+            .try_into()
+            .map_err(|_| ProgramError::InvalidArgument)?;
+        Ok(Self::from_ref(array))
+    }
+
     /// Wrap a 897-byte buffer as a pubkey without validation. The contents
     /// are validated lazily at verify time (`verify`) or eagerly when
     /// preparing the NTT form (`prepare_pubkey`).
@@ -161,47 +189,134 @@ impl Falcon512Pubkey {
         );
 
         ntt::ntt(&mut h);
-        Falcon512PreparedPubkey(h)
+        // Pre-multiply each NTT coefficient by N_INV. This folds the `1/N`
+        // scaling that the inverse NTT would otherwise need at runtime
+        // directly into the prepared pubkey — at compile time, free. After
+        // this, the runtime path is `forward NTT(s2) * h_pk_NTT_scaled`
+        // followed by an unscaled inverse NTT; the math works out since
+        // inv_NTT(NTT(a) * NTT(b)) = (a*b) * N and we've already divided by
+        // N inside h_pk. The result fits in u16 (each value < Q < 2^14),
+        // so we narrow on the way out to halve the on-chain footprint.
+        let n_inv = ntt::N_INV as u64;
+        let q = Q as u64;
+        let mut packed = [0u16; N];
+        let mut k = 0;
+        while k < N {
+            packed[k] = (h[k] as u64 * n_inv % q) as u16;
+            k += 1;
+        }
+        Falcon512PreparedPubkey(packed)
     }
 }
 
 /// Pubkey polynomial decoded and pre-transformed into NTT (frequency) form,
 /// ready to be multiplied with a signature's NTT polynomial during verify.
+/// The `N_INV` scaling that the inverse NTT normally needs at the end is
+/// also pre-folded in. Stored as `u16` since every coefficient is `< Q < 2^14`.
 ///
 /// Construct from a [`Falcon512Pubkey`] via [`Falcon512Pubkey::prepare_pubkey`]
-/// (which can run in `const` context), or from a 2048-byte serialised buffer
+/// (which can run in `const` context), or from a 1024-byte serialised buffer
 /// via [`Falcon512PreparedPubkey::from_bytes`] / [`as_bytes`](Self::as_bytes).
-/// Storing the serialised form on-chain costs 2048 bytes of account data but
+/// Storing the serialised form on-chain costs 1024 bytes of account data but
 /// lets repeated verifies skip the ~99k-CU NTT prep on every call.
+///
+/// `#[repr(transparent)]` so a `&[u16; N]` can be re-borrowed as a
+/// `&Falcon512PreparedPubkey` without a copy via
+/// [`Falcon512PreparedPubkey::from_ref`].
 #[derive(Clone, Eq, PartialEq)]
-pub struct Falcon512PreparedPubkey([u32; N]);
+#[repr(transparent)]
+pub struct Falcon512PreparedPubkey([u16; N]);
 
 impl Falcon512PreparedPubkey {
-    /// Reconstruct from a 2048-byte buffer produced by [`as_bytes`](Self::as_bytes).
-    /// Coefficients are read as little-endian `u32`s. No validation is
+    /// Borrow a `&[u8; FALCON_512_PREPARED_PUBKEY_LEN]` as a
+    /// `&Falcon512PreparedPubkey` with no copy. Useful when the prepared
+    /// pubkey lives in a Solana account: skips a 1024-byte memcpy that
+    /// `from_bytes(*account_bytes)` would otherwise perform.
+    ///
+    /// # Safety
+    ///
+    /// `bytes` must be aligned to at least 2 bytes. The Solana program ABI
+    /// guarantees account data is 8-byte aligned, so reading directly from
+    /// `&account.data[offset..offset + LEN]` (with `offset` 2-byte aligned)
+    /// satisfies this. If you slice into a misaligned position, prefer
+    /// [`Falcon512PreparedPubkey::from_bytes`] which copies into an aligned
+    /// stack buffer.
+    pub const unsafe fn from_ref(
+        bytes: &[u8; FALCON_512_PREPARED_PUBKEY_LEN],
+    ) -> &Self {
+        // SAFETY: caller guarantees 2-byte alignment.
+        // `Falcon512PreparedPubkey` is `#[repr(transparent)]` over
+        // `[u16; N]`, which has the same size as `[u8; LEN]` (= N*2).
+        unsafe { &*(bytes as *const [u8; FALCON_512_PREPARED_PUBKEY_LEN] as *const Self) }
+    }
+
+    /// Borrow an arbitrary-length `&[u8]` as a `&Falcon512PreparedPubkey`,
+    /// checking both the length and the 2-byte alignment requirement. Safe
+    /// API around [`from_ref`](Self::from_ref) — returns
+    /// `Err(InvalidArgument)` if the slice isn't 1024 bytes or isn't aligned
+    /// to a `u16` boundary.
+    ///
+    /// Solana account data is 8-byte aligned per the program ABI, so reading
+    /// from `&account.data[..1024]` always passes the alignment check (and
+    /// any 2-byte-aligned offset into it does too). Use this in PDA loaders
+    /// to skip the 1024-byte memcpy that
+    /// [`from_bytes`](Self::from_bytes) would emit.
+    pub fn try_from_slice(bytes: &[u8]) -> Result<&Self, ProgramError> {
+        let array: &[u8; FALCON_512_PREPARED_PUBKEY_LEN] = bytes
+            .try_into()
+            .map_err(|_| ProgramError::InvalidArgument)?;
+        // Alignment check — `from_ref` requires 2-byte alignment for the
+        // u16 reinterpret.
+        if (array.as_ptr() as usize) % core::mem::align_of::<u16>() != 0 {
+            return Err(ProgramError::InvalidArgument);
+        }
+        // SAFETY: length matches (`try_into` succeeded) and alignment
+        // verified above.
+        Ok(unsafe { Self::from_ref(array) })
+    }
+
+    /// Reconstruct from a 1024-byte buffer produced by [`as_bytes`](Self::as_bytes).
+    /// Coefficients are read as little-endian `u16`s. No validation is
     /// performed — the bytes are assumed to come from a trusted source
     /// (typically a Solana account previously written by your own program).
     pub const fn from_bytes(bytes: [u8; FALCON_512_PREPARED_PUBKEY_LEN]) -> Self {
-        let mut h = [0u32; N];
+        let mut h = [0u16; N];
         let mut i = 0;
         while i < N {
-            h[i] = u32::from_le_bytes([
-                bytes[4 * i],
-                bytes[4 * i + 1],
-                bytes[4 * i + 2],
-                bytes[4 * i + 3],
-            ]);
+            h[i] = u16::from_le_bytes([bytes[2 * i], bytes[2 * i + 1]]);
             i += 1;
         }
         Self(h)
     }
 
-    /// Serialise to a 2048-byte buffer suitable for storing in a Solana
-    /// account. Round-trips via [`from_bytes`](Self::from_bytes).
+    /// Borrow the underlying `[u16; N]` storage as a `&[u8; LEN]` byte view
+    /// suitable for writing to a Solana account. Zero-copy on little-endian
+    /// targets (the only kind Rust supports for Solana SBF and all common
+    /// hosts), since `[u16; N]` is laid out as little-endian u16 words in
+    /// memory and that matches what `from_bytes` reads back via
+    /// `u16::from_le_bytes`. Round-trips via [`from_bytes`](Self::from_bytes)
+    /// or [`from_ref`](Self::from_ref).
+    #[cfg(target_endian = "little")]
+    pub const fn as_bytes(&self) -> &[u8; FALCON_512_PREPARED_PUBKEY_LEN] {
+        // SAFETY: `Falcon512PreparedPubkey` is `#[repr(transparent)]` over
+        // `[u16; N]`. `[u16; N]` and `[u8; 2*N]` have the same size; the
+        // u16 storage has stricter alignment (2 bytes) than u8, so casting
+        // *down* from u16 to u8 reference is sound. On little-endian
+        // (compile-time-checked via `cfg(target_endian = "little")`) the
+        // raw byte order matches `to_le_bytes` element-wise.
+        unsafe {
+            &*(self as *const Self as *const [u8; FALCON_512_PREPARED_PUBKEY_LEN])
+        }
+    }
+
+    /// Serialise to an owned 1024-byte buffer. Always available (works on
+    /// big-endian hosts too) at the cost of an element-by-element byte-swap
+    /// loop. Round-trips via [`from_bytes`](Self::from_bytes).
+    #[cfg(not(target_endian = "little"))]
     pub fn as_bytes(&self) -> [u8; FALCON_512_PREPARED_PUBKEY_LEN] {
         let mut out = [0u8; FALCON_512_PREPARED_PUBKEY_LEN];
         for (i, &coeff) in self.0.iter().enumerate() {
-            out[4 * i..4 * i + 4].copy_from_slice(&coeff.to_le_bytes());
+            out[2 * i..2 * i + 2].copy_from_slice(&coeff.to_le_bytes());
         }
         out
     }
@@ -220,7 +335,14 @@ impl TryFrom<&[u8]> for Falcon512PreparedPubkey {
 
 /// Wire-encoded compressed Falcon-512 signature (header `0x39` + 40-byte
 /// nonce + Golomb-Rice-encoded `s2`, zero-padded to 666 bytes).
+///
+/// `#[repr(transparent)]` so a `&[u8; FALCON_512_SIGNATURE_LEN]` can be
+/// re-borrowed as a `&Falcon512Signature` without a copy via
+/// [`Falcon512Signature::from_ref`] — useful in Solana entrypoints to skip
+/// the 666-byte memcpy that `Falcon512Signature::from(*sig_bytes)` would
+/// otherwise emit (~200 CU saved).
 #[derive(Clone, Eq, PartialEq)]
+#[repr(transparent)]
 pub struct Falcon512Signature([u8; FALCON_512_SIGNATURE_LEN]);
 
 impl From<[u8; FALCON_512_SIGNATURE_LEN]> for Falcon512Signature {
@@ -246,6 +368,30 @@ impl Falcon512Signature {
         Self(value)
     }
 
+    /// Borrow a `&[u8; FALCON_512_SIGNATURE_LEN]` as a `&Falcon512Signature`
+    /// with no copy. Equivalent to `Falcon512Signature::from(*bytes)` but
+    /// without materialising the 666-byte struct on the caller's stack — for
+    /// Solana entrypoints where the bytes already live in the runtime-provided
+    /// input buffer, this skips a memcpy (~200 CU).
+    pub const fn from_ref(bytes: &[u8; FALCON_512_SIGNATURE_LEN]) -> &Self {
+        // SAFETY: `Falcon512Signature` is `#[repr(transparent)]` over
+        // `[u8; FALCON_512_SIGNATURE_LEN]`, so a `&[u8; N]` and a
+        // `&Falcon512Signature` have identical layout, alignment, and
+        // validity invariants.
+        unsafe { &*(bytes as *const [u8; FALCON_512_SIGNATURE_LEN] as *const Self) }
+    }
+
+    /// Borrow an arbitrary-length `&[u8]` as a `&Falcon512Signature`,
+    /// returning `Err(InvalidArgument)` if the slice isn't exactly 666
+    /// bytes. Combines length check + [`from_ref`](Self::from_ref) into one
+    /// safe call — pure references throughout, zero copies.
+    pub fn try_from_slice(bytes: &[u8]) -> Result<&Self, ProgramError> {
+        let array: &[u8; FALCON_512_SIGNATURE_LEN] = bytes
+            .try_into()
+            .map_err(|_| ProgramError::InvalidArgument)?;
+        Ok(Self::from_ref(array))
+    }
+
     /// Borrow the raw 666-byte wire encoding.
     pub const fn as_bytes(&self) -> &[u8; FALCON_512_SIGNATURE_LEN] {
         &self.0
@@ -269,15 +415,29 @@ impl Falcon512Signature {
         let nonce = &sig[1..1 + NONCE_LEN];
         let comp = &sig[1 + NONCE_LEN..];
 
-        let mut s2 = [0i16; N];
-        if !codec::decompress_signature(comp, &mut s2) {
+        // Stack buffers are uninit rather than zero-initialised: both
+        // `decompress_signature` and `hash_to_point` write every slot before
+        // it's read, so the 1024-byte memset for each (~250 CU each on SBF)
+        // is pure overhead. SAFETY justifications inline.
+        use core::mem::MaybeUninit;
+        let mut s2_buf = [MaybeUninit::<i16>::uninit(); N];
+        // SAFETY: `decompress_signature` only writes to its `s2` argument
+        // (via `for u in s2.iter_mut(); *u = ...`) and never reads from it.
+        // After it returns `true`, every slot has been written, so we can
+        // treat the buffer as initialised.
+        let s2_ref: &mut [i16; N] = unsafe { &mut *(s2_buf.as_mut_ptr() as *mut [i16; N]) };
+        if !codec::decompress_signature(comp, s2_ref) {
             return false;
         }
 
-        let mut c = [0u16; N];
-        codec::hash_to_point(nonce, message, &mut c);
+        let mut c_buf = [MaybeUninit::<u16>::uninit(); N];
+        // SAFETY: `hash_to_point` writes every slot via the running
+        // `c_p..c_end` pointer (no reads from `c`), and always returns with
+        // `c_p == c_end` so all N slots are initialised on return.
+        let c_ref: &mut [u16; N] = unsafe { &mut *(c_buf.as_mut_ptr() as *mut [u16; N]) };
+        codec::hash_to_point(nonce, message, c_ref);
 
-        norm_check_with_prepared(&prepared.0, &s2, &c)
+        norm_check_with_prepared(&prepared.0, s2_ref, c_ref)
     }
 
     /// Verify against a raw pubkey. Decodes and runs the forward NTT on every
@@ -317,36 +477,38 @@ fn check_norm(pk_data: &[u8], s2: &[i16; N], c: &[u16; N]) -> bool {
         return false;
     }
     ntt::ntt(&mut h_ntt);
-    norm_check_with_prepared(&h_ntt, s2, c)
+    // Match the prepared-pubkey path: pre-fold N_INV into h_pk_NTT, narrow
+    // to u16 (each value < Q < 2^14). See `prepare_pubkey` for the identity
+    // that makes this correct.
+    let n_inv = ntt::N_INV as u64;
+    let q = Q as u64;
+    let mut packed = [0u16; N];
+    for (i, &slot) in h_ntt.iter().enumerate() {
+        packed[i] = (slot as u64 * n_inv % q) as u16;
+    }
+    norm_check_with_prepared(&packed, s2, c)
 }
 
 #[inline(never)]
-fn norm_check_with_prepared(h_pk_ntt: &[u32; N], s2: &[i16; N], c: &[u16; N]) -> bool {
+fn norm_check_with_prepared(h_pk_ntt: &[u16; N], s2: &[i16; N], c: &[u16; N]) -> bool {
     // Single working buffer that flows through three roles in sequence:
-    //   1. NTT-main-levels output of s2  (after `ntt_main_levels_from_signed`)
-    //   2. pointwise-mul + first-inv-level result  (after `fused_last_fwd_mul_first_inv`)
-    //   3. s2 * h in coefficient form  (after `inv_ntt_main_levels`)
-    // Re-using a single buffer eliminates the 2 KB `s2_ntt` scratch.
-    let mut buf = [0u32; N];
-    ntt::ntt_main_levels_from_signed(&mut buf, s2);
-    ntt::fused_last_fwd_mul_first_inv(&mut buf, h_pk_ntt);
-    ntt::inv_ntt_main_levels(&mut buf);
-
-    let q_i32 = Q as i32;
-    let half_q = q_i32 / 2;
-    let mut norm: u64 = 0;
-    for i in 0..N {
-        let mut s1 = c[i] as i32 - buf[i] as i32;
-        if s1 < 0 {
-            s1 += q_i32;
-        }
-        let s1c = if s1 > half_q { s1 - q_i32 } else { s1 };
-        norm += (s1c as i64 * s1c as i64) as u64;
-        let s2c = s2[i] as i32;
-        norm += (s2c as i64 * s2c as i64) as u64;
-        if norm > L2_BOUND {
-            return false;
-        }
-    }
-    norm <= L2_BOUND
+    //   1. NTT-main-levels output of s2     (after `ntt_main_levels_from_signed`)
+    //   2. pointwise-mul + first-inv-level  (after `fused_last_fwd_mul_first_inv`)
+    //   3. inv-NTT *up to but not including* the last level
+    //      (after `inv_ntt_main_levels`)
+    // The last inv-NTT level is then folded into the L2-norm accumulation
+    // via `last_level_fused_norm`, so `buf`'s 512 final values never get
+    // written-then-re-read (~2.5k CU saved over the unfused split).
+    use core::mem::MaybeUninit;
+    let mut buf_uninit = [MaybeUninit::<u32>::uninit(); N];
+    // SAFETY: `ntt_main_levels_from_signed` writes every slot of `r`
+    // before any subsequent reader sees it (the level-1 sgn_ct_bf
+    // butterflies cover all N positions: r[j] and r[j + N/2] for
+    // j ∈ [0, N/2)). The 2 KB memset-to-zero this avoids is pure overhead
+    // since `buf` is never read before being fully overwritten.
+    let buf: &mut [u32; N] = unsafe { &mut *(buf_uninit.as_mut_ptr() as *mut [u32; N]) };
+    ntt::ntt_main_levels_from_signed(buf, s2);
+    ntt::fused_last_fwd_mul_first_inv(buf, h_pk_ntt);
+    ntt::inv_ntt_main_levels(buf);
+    ntt::last_level_fused_norm(buf, c, s2, L2_BOUND)
 }

@@ -1,7 +1,8 @@
 use pqcrypto_falcon::falcon512;
 use pqcrypto_traits::sign::{DetachedSignature, PublicKey};
 use solana_falcon512::{
-    FALCON_512_PUBKEY_LEN, FALCON_512_SIGNATURE_LEN, Falcon512Pubkey, Falcon512Signature,
+    FALCON_512_PREPARED_PUBKEY_LEN, FALCON_512_PUBKEY_LEN, FALCON_512_SIGNATURE_LEN,
+    Falcon512PreparedPubkey, Falcon512Pubkey, Falcon512Signature,
 };
 
 fn sign_with_pqclean(msg: &[u8]) -> ([u8; FALCON_512_PUBKEY_LEN], [u8; FALCON_512_SIGNATURE_LEN]) {
@@ -81,5 +82,44 @@ fn many_signatures_verify() {
         let pubkey = Falcon512Pubkey::from(pk_bytes);
         let signature = Falcon512Signature::from(sig_bytes);
         assert!(signature.verify(msg.as_bytes(), &pubkey), "iter {i}");
+    }
+}
+
+#[test]
+fn prepared_pubkey_roundtrip_matches_direct_verify() {
+    // Models the on-chain "prepare once, store in PDA, verify later" flow:
+    // call `prepare_pubkey()` at runtime, serialize to bytes, deserialize
+    // back, and confirm `verify_with_prepared` accepts the same signatures
+    // that direct `verify` accepts (and rejects the same forgeries).
+    for i in 0..8 {
+        let msg = format!("prepared roundtrip msg #{i}");
+        let (pk_bytes, sig_bytes) = sign_with_pqclean(msg.as_bytes());
+        let pubkey = Falcon512Pubkey::from(pk_bytes);
+        let signature = Falcon512Signature::from(sig_bytes);
+
+        let prepared = pubkey.prepare_pubkey();
+        let serialized: [u8; FALCON_512_PREPARED_PUBKEY_LEN] = *prepared.as_bytes();
+        let prepared_roundtripped = Falcon512PreparedPubkey::from_bytes(serialized);
+
+        assert!(
+            signature.verify(msg.as_bytes(), &pubkey),
+            "iter {i}: direct verify rejected a valid signature"
+        );
+        assert!(
+            signature.verify_with_prepared(msg.as_bytes(), &prepared),
+            "iter {i}: prepared verify rejected a valid signature"
+        );
+        assert!(
+            signature.verify_with_prepared(msg.as_bytes(), &prepared_roundtripped),
+            "iter {i}: roundtripped prepared verify rejected a valid signature"
+        );
+
+        // And the negative direction — tampered message must fail on the
+        // prepared path too.
+        let tampered = format!("tampered msg #{i}");
+        assert!(
+            !signature.verify_with_prepared(tampered.as_bytes(), &prepared_roundtripped),
+            "iter {i}: prepared verify accepted a tampered message"
+        );
     }
 }

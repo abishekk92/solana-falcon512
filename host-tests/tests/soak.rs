@@ -192,16 +192,14 @@ fn soak_differential_vs_pqclean() {
             rng.fill(&mut sig_bytes);
             rng.fill(&mut msg);
 
-            let ours = Falcon512Signature::from(sig_bytes)
-                .verify(&msg, &Falcon512Pubkey::from(pk_bytes));
+            let ours =
+                Falcon512Signature::from(sig_bytes).verify(&msg, &Falcon512Pubkey::from(pk_bytes));
 
             let theirs = match (
                 falcon512::PublicKey::from_bytes(&pk_bytes),
                 falcon512::DetachedSignature::from_bytes(&sig_bytes),
             ) {
-                (Ok(pk), Ok(sig)) => {
-                    falcon512::verify_detached_signature(&sig, &msg, &pk).is_ok()
-                }
+                (Ok(pk), Ok(sig)) => falcon512::verify_detached_signature(&sig, &msg, &pk).is_ok(),
                 _ => false,
             };
 

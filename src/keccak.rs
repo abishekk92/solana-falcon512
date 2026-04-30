@@ -161,19 +161,16 @@ impl Shake256 {
 
         // Phase 2: bulk 8-byte chunks XORed straight into a lane. Bytes within
         // a lane are little-endian per FIPS 202, so `from_le_bytes` is the
-        // correct assembly. Each iteration here replaces 8 byte-by-byte
-        // iterations of the original loop.
+        // correct assembly. The `try_into` over an 8-byte sub-slice gives
+        // LLVM-SBF a clean shape it can lower to a single (possibly
+        // unaligned) `ldxdw` rather than 8 × `ldxb` + shifts + ORs.
         while i + 8 <= len {
-            let chunk = u64::from_le_bytes([
-                data[i],
-                data[i + 1],
-                data[i + 2],
-                data[i + 3],
-                data[i + 4],
-                data[i + 5],
-                data[i + 6],
-                data[i + 7],
-            ]);
+            // SAFETY: phase 1 made `self.pos` lane-aligned (multiple of 8),
+            // and `pos < RATE = 136 = 17 * 8`, so `pos / 8 < 17 < 25`. Tells
+            // LLVM-SBF the lane index is in-bounds without a runtime check.
+            unsafe { core::hint::assert_unchecked(self.pos / 8 < 17) };
+            let chunk_bytes: [u8; 8] = data[i..i + 8].try_into().unwrap();
+            let chunk = u64::from_le_bytes(chunk_bytes);
             self.state[self.pos / 8] ^= chunk;
             self.pos += 8;
             i += 8;
