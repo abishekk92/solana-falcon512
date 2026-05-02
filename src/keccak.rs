@@ -1,3 +1,4 @@
+// Keccak-f[1600] round constants from NIST FIPS 202, §3.2.5.
 const RC: [u64; 24] = [
     0x0000000000000001,
     0x0000000000008082,
@@ -24,6 +25,12 @@ const RC: [u64; 24] = [
     0x0000000080000001,
     0x8000000080008008,
 ];
+
+// NIST FIPS 202, §6.2 defines SHAKE with suffix `1111`; after the first
+// `pad10*1` bit is included in the byte stream, the little-endian byte suffix
+// is `0001_1111` = 0x1f. The final `pad10*1` bit is set in the last rate byte.
+const SHAKE256_DOMAIN_SUFFIX: u64 = 0x1f;
+const SHAKE256_FINAL_RATE_BIT: u64 = 0x80;
 
 fn keccak_f1600(s: &mut [u64; 25]) {
     // **Bertoni lane-complementing + chi-row** layout.
@@ -191,6 +198,8 @@ fn keccak_f1600(s: &mut [u64; 25]) {
     s[20] = !s[20];
 }
 
+// NIST FIPS 202, §6.2: SHAKE256 uses capacity 512 bits, so its rate is
+// 1600 - 512 = 1088 bits = 136 bytes.
 const RATE: usize = 136;
 
 pub struct Shake256 {
@@ -263,9 +272,9 @@ impl Shake256 {
     pub fn finalize(&mut self) {
         let lane = self.pos / 8;
         let shift = 8 * (self.pos % 8);
-        self.state[lane] ^= 0x1Fu64 << shift;
+        self.state[lane] ^= SHAKE256_DOMAIN_SUFFIX << shift;
         let last = RATE - 1;
-        self.state[last / 8] ^= 0x80u64 << (8 * (last % 8));
+        self.state[last / 8] ^= SHAKE256_FINAL_RATE_BIT << (8 * (last % 8));
         keccak_f1600(&mut self.state);
         self.pos = 0;
     }
@@ -305,6 +314,140 @@ impl Shake256 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn keccak_lfsr_next_bit(r: &mut u8) -> u64 {
+        let bit = (*r & 1) as u64;
+        if (*r & 0x80) != 0 {
+            *r = (*r << 1) ^ 0x71;
+        } else {
+            *r <<= 1;
+        }
+        bit
+    }
+
+    // Derives the Keccak-f[1600] round constants using the FIPS 202, §3.2.5
+    // LFSR sequence instead of duplicating the literal table under test.
+    fn spec_round_constants() -> [u64; 24] {
+        let mut constants = [0u64; 24];
+        let mut lfsr = 0x01u8;
+        for rc in &mut constants {
+            for j in 0..=6 {
+                rc_if_bit_set(rc, keccak_lfsr_next_bit(&mut lfsr), (1usize << j) - 1);
+            }
+        }
+        constants
+    }
+
+    fn rc_if_bit_set(rc: &mut u64, bit: u64, position: usize) {
+        if bit != 0 {
+            *rc ^= 1u64 << position;
+        }
+    }
+
+    fn keccak_f1600_ref(s: &mut [u64; 25]) {
+        const RHO: [[u32; 5]; 5] = [
+            [0, 36, 3, 41, 18],
+            [1, 44, 10, 45, 2],
+            [62, 6, 43, 15, 61],
+            [28, 55, 25, 21, 56],
+            [27, 20, 39, 8, 14],
+        ];
+
+        let round_constants = spec_round_constants();
+        for &rc in &round_constants {
+            let mut c = [0u64; 5];
+            for x in 0..5 {
+                c[x] = s[x] ^ s[x + 5] ^ s[x + 10] ^ s[x + 15] ^ s[x + 20];
+            }
+
+            let mut d = [0u64; 5];
+            for x in 0..5 {
+                d[x] = c[(x + 4) % 5] ^ c[(x + 1) % 5].rotate_left(1);
+            }
+            for y in 0..5 {
+                for x in 0..5 {
+                    s[x + 5 * y] ^= d[x];
+                }
+            }
+
+            let mut b = [0u64; 25];
+            for y in 0..5 {
+                for x in 0..5 {
+                    let dst_x = y;
+                    let dst_y = (2 * x + 3 * y) % 5;
+                    b[dst_x + 5 * dst_y] = s[x + 5 * y].rotate_left(RHO[x][y]);
+                }
+            }
+
+            for y in 0..5 {
+                for x in 0..5 {
+                    s[x + 5 * y] =
+                        b[x + 5 * y] ^ ((!b[((x + 1) % 5) + 5 * y]) & b[((x + 2) % 5) + 5 * y]);
+                }
+            }
+
+            s[0] ^= rc;
+        }
+    }
+
+    #[test]
+    fn keccak_constants_match_spec() {
+        assert_eq!(RATE, (1600 - 512) / 8, "SHAKE256 rate");
+        assert_eq!(RATE, 17 * 8, "SHAKE256 rate lanes");
+        assert_eq!(SHAKE256_DOMAIN_SUFFIX, 0x1f, "SHAKE256 domain suffix");
+        assert_eq!(
+            SHAKE256_FINAL_RATE_BIT, 0x80,
+            "multi-rate padding final bit"
+        );
+
+        let derived = spec_round_constants();
+        assert_eq!(RC, derived, "Keccak-f[1600] round constants");
+    }
+
+    #[test]
+    fn optimized_keccak_f1600_matches_clean_reference() {
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                let mut x = self.0;
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                self.0 = x;
+                x
+            }
+        }
+
+        let mut cases: Vec<[u64; 25]> = vec![[0; 25], [u64::MAX; 25]];
+        for lane in 0..25 {
+            let mut s = [0u64; 25];
+            s[lane] = 1;
+            cases.push(s);
+            let mut s = [0u64; 25];
+            s[lane] = u64::MAX;
+            cases.push(s);
+        }
+
+        let mut rng = Rng(0x51A0_5EED_1600_0024);
+        for _ in 0..512 {
+            let mut s = [0u64; 25];
+            for lane in &mut s {
+                *lane = rng.next();
+            }
+            cases.push(s);
+        }
+
+        for (case, input) in cases.into_iter().enumerate() {
+            let mut optimized = input;
+            let mut reference = input;
+            keccak_f1600(&mut optimized);
+            keccak_f1600_ref(&mut reference);
+            assert_eq!(
+                optimized, reference,
+                "case {case}: optimized Keccak-f[1600] diverges from clean reference"
+            );
+        }
+    }
 
     #[test]
     fn shake256_empty() {
