@@ -48,16 +48,23 @@ fn rejects_modified_message() {
 #[test]
 fn rejects_modified_signature() {
     let msg = b"falcon-512 test message";
-    let (pk_bytes, mut sig_bytes) = sign_with_pqclean(msg);
-
-    // Flip a bit inside the compressed sig payload (past the 1-byte header and
-    // 40-byte nonce).
-    sig_bytes[100] ^= 0x01;
-
+    let (pk_bytes, sig_bytes) = sign_with_pqclean(msg);
     let pubkey = Falcon512Pubkey::from(pk_bytes);
-    let signature = Falcon512Signature::from(sig_bytes);
 
-    assert!(!signature.verify(msg, &pubkey));
+    // Each mutation should be rejected. Hits one byte in each of the three
+    // wire-format regions: the header (rejected at header check), the salt
+    // (rejected at hash-to-point divergence), the compressed s2 payload
+    // (rejected at norm or decompression). The deeper-fuzz battery in
+    // `fuzz.rs::fuzz_mutated_signature_rejects` exercises 500 random mutations.
+    for &mutation_byte in &[0usize, 20, 100] {
+        let mut tampered = sig_bytes;
+        tampered[mutation_byte] ^= 0x01;
+        let signature = Falcon512Signature::from(tampered);
+        assert!(
+            !signature.verify(msg, &pubkey),
+            "mutation at byte {mutation_byte} was not rejected"
+        );
+    }
 }
 
 #[test]

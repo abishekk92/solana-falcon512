@@ -355,4 +355,126 @@ mod tests {
         assert_eq!(&out[..100], &a[..]);
         assert_eq!(&out[100..], &b[..]);
     }
+
+    /// Differential test against the RustCrypto `sha3` crate. NIST KATs cover
+    /// only three inputs, so a typo in any of Keccak-f1600's 24 round
+    /// constants or 25 rotation offsets that happens to leave those three
+    /// outputs unchanged would slip through. This compares full-output
+    /// (300+ bytes) against `sha3::Shake256` across 10K random inputs of
+    /// varying lengths to flush out any such typo.
+    #[test]
+    fn shake256_matches_sha3_crate() {
+        use sha3::digest::{ExtendableOutput, Update, XofReader};
+
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                let mut x = self.0;
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                self.0 = x;
+                x
+            }
+            fn fill(&mut self, buf: &mut [u8]) {
+                for slot in buf.iter_mut() { *slot = self.next() as u8; }
+            }
+        }
+        let mut rng = Rng(0xDEAD_BEEF_CAFE_F00D);
+
+        for iter in 0..10_000 {
+            // Vary input length 0..=400 bytes (spans head, bulk, tail phases
+            // and multiple rate boundaries).
+            let in_len = (rng.next() % 401) as usize;
+            let mut input = vec![0u8; in_len];
+            rng.fill(&mut input);
+
+            // Vary output length 0..=300 bytes (spans rate boundary 136).
+            let out_len = (rng.next() % 301) as usize;
+
+            let mut ours = Shake256::new();
+            ours.absorb(&input);
+            ours.finalize();
+            let mut our_out = vec![0u8; out_len];
+            ours.squeeze(&mut our_out);
+
+            let mut theirs = sha3::Shake256::default();
+            theirs.update(&input);
+            let mut their_reader = theirs.finalize_xof();
+            let mut their_out = vec![0u8; out_len];
+            their_reader.read(&mut their_out);
+
+            assert_eq!(
+                our_out, their_out,
+                "iter {iter}: SHAKE256 diverges from sha3 crate (in_len={in_len}, out_len={out_len})"
+            );
+        }
+    }
+
+    /// Cross-rate-boundary differential: chunked absorbs and chunked
+    /// squeezes against the reference. Catches any state-misalignment
+    /// bug across rate transitions that the single-shot test above
+    /// might mask.
+    #[test]
+    fn shake256_chunked_matches_sha3_crate() {
+        use sha3::digest::{ExtendableOutput, Update, XofReader};
+
+        let mut state = 0xABCD_1234_FEED_FACEu64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+
+        for iter in 0..1_000 {
+            // Random total input length 0..=500.
+            let total = (next() % 501) as usize;
+            let mut input = vec![0u8; total];
+            for slot in input.iter_mut() { *slot = next() as u8; }
+
+            // Split into 1..=8 random absorb chunks.
+            let n_chunks = ((next() % 8) + 1) as usize;
+            let mut splits: Vec<usize> = (0..n_chunks - 1)
+                .map(|_| (next() as usize) % (total + 1))
+                .collect();
+            splits.push(0);
+            splits.push(total);
+            splits.sort();
+            splits.dedup();
+
+            let mut ours = Shake256::new();
+            for w in splits.windows(2) {
+                ours.absorb(&input[w[0]..w[1]]);
+            }
+            ours.finalize();
+
+            // Random output 0..=400 bytes, squeezed in 1..=8 chunks.
+            let out_total = (next() % 401) as usize;
+            let n_out = ((next() % 8) + 1) as usize;
+            let mut out_splits: Vec<usize> = (0..n_out - 1)
+                .map(|_| (next() as usize) % (out_total + 1))
+                .collect();
+            out_splits.push(0);
+            out_splits.push(out_total);
+            out_splits.sort();
+            out_splits.dedup();
+
+            let mut our_out = vec![0u8; out_total];
+            for w in out_splits.windows(2) {
+                ours.squeeze(&mut our_out[w[0]..w[1]]);
+            }
+
+            let mut theirs = sha3::Shake256::default();
+            theirs.update(&input);
+            let mut their_reader = theirs.finalize_xof();
+            let mut their_out = vec![0u8; out_total];
+            their_reader.read(&mut their_out);
+
+            assert_eq!(
+                our_out, their_out,
+                "iter {iter}: chunked SHAKE diverges (total_in={total}, total_out={out_total})"
+            );
+        }
+    }
 }
