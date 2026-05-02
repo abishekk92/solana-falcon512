@@ -34,3 +34,4 @@ import Falcon512.Refinement      -- Per-element refinement lemmas for the six Ru
 import Falcon512.HashToPoint     -- 5·Q rejection bound is uniform-mod-Q (counting form)
 import Falcon512.Canonicality    -- Abstract byte-level codec canonicality (`serializeFalcon_injective`)
 import Falcon512.Keccak          -- FIPS-202 SHAKE-256 sponge associativity (sorry — Aristotle target)
+import Falcon512.NTTIso          -- Negacyclic NTT ring isomorphism (sorry — Aristotle target)
