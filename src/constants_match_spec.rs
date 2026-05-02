@@ -59,6 +59,7 @@ fn nonce_len_eq_40() {
 ///   pk = [0x00 | logn] || pack_14bit(h)
 /// For Falcon-512 (logn = 9), header = 0x00 | 9 = 0x09.
 #[test]
+#[allow(clippy::identity_op)] // `0x00 | logn` mirrors spec §3.11.1 derivation
 fn pubkey_header_byte() {
     assert_eq!(PUBKEY_HEADER, 0x09);
     assert_eq!(PUBKEY_HEADER, 0x00 | 0x09_u8);
@@ -90,6 +91,7 @@ fn wire_format_lengths() {
 /// in `codec::hash_to_point` is pinned end-to-end by the PQClean
 /// differential (any other k diverges immediately).
 #[test]
+#[allow(clippy::assertions_on_constants)] // tautological at compile time by design
 fn hash_to_point_rejection_bound_is_5q() {
     assert!(5 * Q <= 1 << 16, "5·Q must fit in u16 candidates");
     assert!(6 * Q > 1 << 16, "6·Q would exceed 2^16, so 5·Q is the max");

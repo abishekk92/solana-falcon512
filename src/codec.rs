@@ -355,7 +355,7 @@ mod adversarial {
 
     #[test]
     fn hash_to_point_matches_per_byte_squeeze_random() {
-        let mut rng = Rng::new(0xC0FFEE_CAFE_BABE);
+        let mut rng = Rng::new(0x00C0_FFEE_CAFE_BABE);
         for iter in 0..10_000 {
             let mut nonce = [0u8; 40];
             rng.fill(&mut nonce);
@@ -1010,7 +1010,7 @@ mod adversarial {
     /// `s2` — never to the same `s2` via a different byte representation.
     #[test]
     fn canonicality_under_bit_flips() {
-        let mut rng = Rng::new(0x5EA_C0FFEE_C0DE);
+        let mut rng = Rng::new(0x0005_EAC0_FFEE_C0DE);
         let mut accepted_after_flip = 0u32;
         let mut total_flips = 0u32;
         for outer in 0..200 {
@@ -1060,7 +1060,7 @@ mod adversarial {
     /// `s2`, and recompressing gives back the same byte string.
     #[test]
     fn decompress_is_left_inverse_of_compress() {
-        let mut rng = Rng::new(0xF00D_BABE_C0FFEE);
+        let mut rng = Rng::new(0x00F0_0DBA_BEC0_FFEE);
         for iter in 0..2000 {
             let mut s2 = [0i16; N];
             for slot in s2.iter_mut() {

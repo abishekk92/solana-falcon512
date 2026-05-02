@@ -422,7 +422,7 @@ mod proptest_formal {
             let mut s2 = [0i16; N];
             if decompress_signature(&buf, &mut s2) {
                 for &v in s2.iter() {
-                    prop_assert!(v >= -2047 && v <= 2047,
+                    prop_assert!((-2047..=2047).contains(&v),
                         "s2 coefficient {} out of [-2047, 2047]", v);
                 }
             }

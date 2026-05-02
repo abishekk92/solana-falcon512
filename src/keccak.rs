@@ -533,7 +533,8 @@ mod tests {
                 via_squeeze.squeeze(&mut from_squeeze);
 
                 assert_eq!(
-                    from_lanes, from_squeeze,
+                    from_lanes,
+                    from_squeeze,
                     "block {block}: rate_lanes() and squeeze() disagree (input_len={})",
                     input.len()
                 );

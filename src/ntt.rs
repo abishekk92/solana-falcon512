@@ -76,19 +76,19 @@ const INV_ZETAS: [u32; N] = {
 /// Offset for the lazy-`t` CT butterfly. After 7 lazy fwd levels inputs are
 /// bounded by 8·Q, so `t = b·zeta < 8·Q²`.
 pub(crate) const T_OFFSET_LAZY_T: u64 = 8 * (Q as u64) * (Q as u64);
-const _: () = assert!(T_OFFSET_LAZY_T % (Q as u64) == 0); // spec-preserving
+const _: () = assert!(T_OFFSET_LAZY_T.is_multiple_of(Q as u64)); // spec-preserving
 const _: () = assert!(T_OFFSET_LAZY_T >= 8 * (Q as u64) * (Q as u64 - 1)); // ≥ max t
 
 /// Offset inside the lazy GS butterfly. Worst-case `v` after 7 inv-NTT lazy
 /// levels is ~256·Q.
 pub(crate) const LAZY_OFFSET_GS: u64 = (Q as u64) * 256;
-const _: () = assert!(LAZY_OFFSET_GS % (Q as u64) == 0); // spec-preserving
+const _: () = assert!(LAZY_OFFSET_GS.is_multiple_of(Q as u64)); // spec-preserving
 const _: () = assert!(LAZY_OFFSET_GS >= 256 * (Q as u64)); // ≥ max v
 
 /// Offset for the fused last-fwd / pointwise / first-inv step. Worst-case
 /// `t = prev_high · z ≤ 8·Q³` (preceding fwd last main level is `ct_butterfly_lazy_t`).
 pub(crate) const T_OFFSET_FUSED: u64 = (Q as u64) * (1u64 << 31);
-const _: () = assert!(T_OFFSET_FUSED % (Q as u64) == 0); // spec-preserving
+const _: () = assert!(T_OFFSET_FUSED.is_multiple_of(Q as u64)); // spec-preserving
 // ≥ worst-case t = (8·Q + T_OFFSET_LAZY_T) · (Q − 1).
 const _: () = assert!(T_OFFSET_FUSED >= (8 * (Q as u64) + T_OFFSET_LAZY_T) * (Q as u64 - 1));
 
@@ -96,7 +96,7 @@ const _: () = assert!(T_OFFSET_FUSED >= (8 * (Q as u64) + T_OFFSET_LAZY_T) * (Q 
 /// `new_hi ≤ 512·Q²`, and big enough that LLVM-SBF can't infer the subtract
 /// fits u32 (avoids zero-extension pairs around it).
 pub(crate) const BIG_Q_FUSED_NORM: u64 = (Q as u64) << 23;
-const _: () = assert!(BIG_Q_FUSED_NORM % (Q as u64) == 0); // spec-preserving
+const _: () = assert!(BIG_Q_FUSED_NORM.is_multiple_of(Q as u64)); // spec-preserving
 // ≥ worst-case new_lo = 2 · 256·Q.
 const _: () = assert!(BIG_Q_FUSED_NORM >= 512 * (Q as u64));
 // ≥ worst-case new_hi = (256·Q + LAZY_OFFSET_GS) · (Q − 1) = 512·Q · (Q − 1).
