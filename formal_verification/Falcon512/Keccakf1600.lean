@@ -11,26 +11,20 @@
   Lean target (`Falcon512.KeccakBertoni`, depends on this file).
 
   ┌──────────────────────────────────────────────────────────────────┐
-  │ TARGETS                                                          │
+  │ CONTENTS                                                         │
   ├──────────────────────────────────────────────────────────────────┤
-  │ Definitions (no sorries):                                        │
+  │ Definitions:                                                     │
   │   theta, rho, pi, chi, iota, round, f1600                        │
-  │   laneIdx (FIPS-202 §B.1 (x,y) ↔ 5y+x)                          │
+  │   laneIdx (FIPS-202 §B.1 (x,y) ↔ 5y+x), rotL64, piInv            │
   │                                                                  │
-  │ Structural rungs (Aristotle targets):                           │
-  │ §1  theta_linear        — theta is XOR-linear over State        │
-  │ §2  iota_only_lane_0    — iota XORs round constant into lane 0  │
-  │                            and leaves other lanes intact         │
-  │ §3  rho_permutes        — rho preserves the multiset of lanes   │
-  │                            (each lane is rotated, not moved)    │
-  │ §4  pi_permutation      — pi is a lane permutation; bijective   │
-  │ §5  f1600_24_rounds     — f1600 = round 23 ∘ … ∘ round 0        │
-  │                            (defining structure)                  │
+  │ Structural lemmas (all proven, no sorries):                      │
+  │ §1  theta_linear        — θ is XOR-linear (via rotL64_xor +      │
+  │                           Nat.shiftLeft_xor_distrib + ac_rfl)    │
+  │ §2  iota_only_lane_0    — ι touches only lane 0 (case split)     │
+  │ §3  rho_in_place        — ρ rotates each lane in place (rfl)     │
+  │ §4  pi_left_inverse     — piInv ∘ π = id (Fin 25 case analysis)  │
+  │ §5  f1600_unfold        — f1600 = foldl round (rfl)              │
   └──────────────────────────────────────────────────────────────────┘
-
-  All structural lemmas are stated as `sorry` Aristotle targets — each
-  is local to one of the five round operations and provable from the
-  definition.
 
   The ≡ FIPS-202 §3.2 contract is asserted by definition: the
   array-form `theta`/`rho`/`pi`/`chi`/`iota` here are the §B.1
