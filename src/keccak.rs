@@ -26,10 +26,28 @@ const RC: [u64; 24] = [
 ];
 
 fn keccak_f1600(s: &mut [u64; 25]) {
-    // One full Keccak-f round, parameterised on its round constant. We
-    // unroll all 24 rounds at the call site below; this saves the
-    // per-round counter/branch (~3 ops × 24 ≈ 72 ops per permutation, with
-    // ~10 permutations per verify).
+    // **Bertoni lane-complementing + chi-row** layout.
+    //
+    // Pre-complement the canonical 6-lane Keccak Team set
+    //     CS = {1, 2, 8, 12, 17, 20}
+    // chosen so that across one full round (theta+rho+pi+chi+iota), the
+    // complementation pattern is invariant. Per-row IN-complemented b's at
+    // post-pi positions (derived from theta+rho+pi propagation):
+    //     row 0: b0, b2, b3   row 1: b0, b2     row 2: b0, b2
+    //     row 3: b1, b3, b4   row 4: b0, b3
+    // Per-row OUT-complemented (must store ~A_logical_new):
+    //     row 0: x=1, x=2     row 1: x=3        row 2: x=2
+    //     row 3: x=2          row 4: x=0
+    // Net ~456 NOTs eliminated per 24-round permute, ~12 added at boundaries.
+
+    // Entry: complement the 6 CS lanes once.
+    s[1] = !s[1];
+    s[2] = !s[2];
+    s[8] = !s[8];
+    s[12] = !s[12];
+    s[17] = !s[17];
+    s[20] = !s[20];
+
     macro_rules! round {
         ($rc:expr) => {{
             // theta — column parities
@@ -45,59 +63,96 @@ fn keccak_f1600(s: &mut [u64; 25]) {
             let d3 = c2 ^ c4.rotate_left(1);
             let d4 = c3 ^ c0.rotate_left(1);
 
-            // rho + pi merged with theta's xor.
-            let b00 = s[0] ^ d0;
-            let b01 = (s[6] ^ d1).rotate_left(44);
-            let b02 = (s[12] ^ d2).rotate_left(43);
-            let b03 = (s[18] ^ d3).rotate_left(21);
-            let b04 = (s[24] ^ d4).rotate_left(14);
-            let b05 = (s[3] ^ d3).rotate_left(28);
-            let b06 = (s[9] ^ d4).rotate_left(20);
-            let b07 = (s[10] ^ d0).rotate_left(3);
-            let b08 = (s[16] ^ d1).rotate_left(45);
-            let b09 = (s[22] ^ d2).rotate_left(61);
-            let b10 = (s[1] ^ d1).rotate_left(1);
-            let b11 = (s[7] ^ d2).rotate_left(6);
-            let b12 = (s[13] ^ d3).rotate_left(25);
-            let b13 = (s[19] ^ d4).rotate_left(8);
-            let b14 = (s[20] ^ d0).rotate_left(18);
-            let b15 = (s[4] ^ d4).rotate_left(27);
-            let b16 = (s[5] ^ d0).rotate_left(36);
-            let b17 = (s[11] ^ d1).rotate_left(10);
-            let b18 = (s[17] ^ d2).rotate_left(15);
-            let b19 = (s[23] ^ d3).rotate_left(56);
-            let b20 = (s[2] ^ d2).rotate_left(62);
-            let b21 = (s[8] ^ d3).rotate_left(55);
-            let b22 = (s[14] ^ d4).rotate_left(39);
-            let b23 = (s[15] ^ d0).rotate_left(41);
-            let b24 = (s[21] ^ d1).rotate_left(2);
+            // **In-place chi-row + 10 cell-saves**, per PLAN.md item #4.
+            // Row 0 outputs to s[0..5]; rows 1..4 read s[3], s[1], s[4], s[2]
+            // from this range — save before overwriting.
+            let s3 = s[3];
+            let s1 = s[1];
+            let s4 = s[4];
+            let s2 = s[2];
 
-            // chi + iota (only lane 0 absorbs the round constant)
-            s[0] = b00 ^ ((!b01) & b02) ^ $rc;
-            s[1] = b01 ^ ((!b02) & b03);
-            s[2] = b02 ^ ((!b03) & b04);
-            s[3] = b03 ^ ((!b04) & b00);
-            s[4] = b04 ^ ((!b00) & b01);
-            s[5] = b05 ^ ((!b06) & b07);
-            s[6] = b06 ^ ((!b07) & b08);
-            s[7] = b07 ^ ((!b08) & b09);
-            s[8] = b08 ^ ((!b09) & b05);
-            s[9] = b09 ^ ((!b05) & b06);
-            s[10] = b10 ^ ((!b11) & b12);
-            s[11] = b11 ^ ((!b12) & b13);
-            s[12] = b12 ^ ((!b13) & b14);
-            s[13] = b13 ^ ((!b14) & b10);
-            s[14] = b14 ^ ((!b10) & b11);
-            s[15] = b15 ^ ((!b16) & b17);
-            s[16] = b16 ^ ((!b17) & b18);
-            s[17] = b17 ^ ((!b18) & b19);
-            s[18] = b18 ^ ((!b19) & b15);
-            s[19] = b19 ^ ((!b15) & b16);
-            s[20] = b20 ^ ((!b21) & b22);
-            s[21] = b21 ^ ((!b22) & b23);
-            s[22] = b22 ^ ((!b23) & b24);
-            s[23] = b23 ^ ((!b24) & b20);
-            s[24] = b24 ^ ((!b20) & b21);
+            // Row 0 — IN: b0,b2,b3 complemented; OUT-complement: x=1,2.
+            // Iota fused into lane 0.
+            {
+                let b0 = s[0] ^ d0;
+                let b1 = (s[6] ^ d1).rotate_left(44);
+                let b2 = (s[12] ^ d2).rotate_left(43);
+                let b3 = (s[18] ^ d3).rotate_left(21);
+                let b4 = (s[24] ^ d4).rotate_left(14);
+                s[0] = b0 ^ (b1 | b2) ^ $rc;
+                s[1] = b1 ^ ((!b2) | b3);
+                s[2] = b2 ^ (b3 & b4);
+                s[3] = b3 ^ (b4 | b0);
+                s[4] = b4 ^ (b0 & b1);
+            }
+
+            // Row 1 outputs to s[5..10]; rows 2..4 read s[7], s[5], s[8].
+            let s7 = s[7];
+            let s5 = s[5];
+            let s8 = s[8];
+
+            // Row 1 — IN: b0,b2 complemented; OUT-complement: x=3.
+            {
+                let b0 = (s3 ^ d3).rotate_left(28);
+                let b1 = (s[9] ^ d4).rotate_left(20);
+                let b2 = (s[10] ^ d0).rotate_left(3);
+                let b3 = (s[16] ^ d1).rotate_left(45);
+                let b4 = (s[22] ^ d2).rotate_left(61);
+                s[5] = b0 ^ (b1 | b2);
+                s[6] = b1 ^ (b2 & b3);
+                s[7] = (!b2) ^ b4 ^ (b3 & b4);
+                s[8] = b3 ^ (b4 | b0);
+                s[9] = b4 ^ (b0 & b1);
+            }
+
+            // Row 2 outputs to s[10..15]; rows 3..4 read s[11], s[14].
+            let s11 = s[11];
+            let s14 = s[14];
+
+            // Row 2 — IN: b0,b2 complemented; OUT-complement: x=2.
+            {
+                let b0 = (s1 ^ d1).rotate_left(1);
+                let b1 = (s7 ^ d2).rotate_left(6);
+                let b2 = (s[13] ^ d3).rotate_left(25);
+                let b3 = (s[19] ^ d4).rotate_left(8);
+                let b4 = (s[20] ^ d0).rotate_left(18);
+                s[10] = b0 ^ (b1 | b2);
+                s[11] = b1 ^ (b2 & b3);
+                s[12] = b2 ^ b4 ^ (b3 & b4);
+                s[13] = b3 ^ !(b4 | b0);
+                s[14] = b4 ^ (b0 & b1);
+            }
+
+            // Row 3 outputs to s[15..20]; row 4 reads s[15].
+            let s15 = s[15];
+
+            // Row 3 — IN: b1,b3,b4 complemented; OUT-complement: x=2.
+            {
+                let b0 = (s4 ^ d4).rotate_left(27);
+                let b1 = (s5 ^ d0).rotate_left(36);
+                let b2 = (s11 ^ d1).rotate_left(10);
+                let b3 = (s[17] ^ d2).rotate_left(15);
+                let b4 = (s[23] ^ d3).rotate_left(56);
+                s[15] = b0 ^ (b1 & b2);
+                s[16] = b1 ^ (b2 | b3);
+                s[17] = b2 ^ ((!b3) | b4);
+                s[18] = (!b3) ^ (b4 & b0);
+                s[19] = b4 ^ (b0 | b1);
+            }
+
+            // Row 4 — IN: b0,b3 complemented; OUT-complement: x=0.
+            {
+                let b0 = (s2 ^ d2).rotate_left(62);
+                let b1 = (s8 ^ d3).rotate_left(55);
+                let b2 = (s14 ^ d4).rotate_left(39);
+                let b3 = (s15 ^ d0).rotate_left(41);
+                let b4 = (s[21] ^ d1).rotate_left(2);
+                s[20] = b0 ^ b2 ^ (b1 & b2);
+                s[21] = b1 ^ !(b2 | b3);
+                s[22] = b2 ^ (b3 & b4);
+                s[23] = b3 ^ (b4 | b0);
+                s[24] = b4 ^ (b0 & b1);
+            }
         }};
     }
 
@@ -125,6 +180,15 @@ fn keccak_f1600(s: &mut [u64; 25]) {
     round!(RC[21]);
     round!(RC[22]);
     round!(RC[23]);
+
+    // Exit: un-complement the 6 CS lanes so the caller sees the normal
+    // (uncomplemented) state. Cost paid once per permute.
+    s[1] = !s[1];
+    s[2] = !s[2];
+    s[8] = !s[8];
+    s[12] = !s[12];
+    s[17] = !s[17];
+    s[20] = !s[20];
 }
 
 const RATE: usize = 136;
