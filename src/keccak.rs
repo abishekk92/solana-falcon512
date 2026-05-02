@@ -206,6 +206,7 @@ impl Shake256 {
         }
     }
 
+    #[inline(always)]
     pub fn absorb(&mut self, data: &[u8]) {
         let mut i = 0;
         let len = data.len();
@@ -258,6 +259,7 @@ impl Shake256 {
         }
     }
 
+    #[inline(always)]
     pub fn finalize(&mut self) {
         let lane = self.pos / 8;
         let shift = 8 * (self.pos % 8);

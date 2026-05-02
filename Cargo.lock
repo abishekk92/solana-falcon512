@@ -2185,7 +2185,7 @@ dependencies = [
 
 [[package]]
 name = "solana-falcon512"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "solana-program-error",
 ]

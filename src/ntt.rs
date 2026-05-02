@@ -166,7 +166,8 @@ macro_rules! gs_butterfly_lazy {
 // a per-butterfly `jge r, 0x200, <fail>` bounds check and 3-instruction
 // recompute of the high-half base address — visible in the unrolled hot
 // loop and worth hundreds of CUs across the full NTT.
-const fn ntt_levels_after_first(r: &mut [u32; N]) {
+#[inline(always)]
+pub(crate) const fn ntt_levels_after_first(r: &mut [u32; N]) {
     let mut k: usize = 2;
 
     // Levels with len = N/4, N/8, ..., 16: inner butterfly loop unrolled by 8.

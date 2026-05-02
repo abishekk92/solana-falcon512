@@ -4,7 +4,8 @@ Pure-Rust **Falcon-512 signature verification**, optimised for Solana SBF progra
 
 - `no_std`, allocation-free, zero non-essential dependencies.
 - Compressed-format signatures (header byte `0x39`) only.
-- **~196k compute units per verify** on Solana SBF with a prepared pubkey. (See [Benchmarks](#benchmarks).)
+- **~173–183k compute units per verify** on Solana SBF with a prepared pubkey
+  (rejection sampling is not constant-time — see [Benchmarks](#benchmarks)).
 - Zero-copy borrow APIs (`from_ref`, `try_from_slice`) so signatures and prepared pubkeys can be verified directly from runtime input / account data with no memcpy.
 - Prepared pubkey storage: **1024 bytes** (one u16 per NTT coefficient, since each value is `< Q < 2^14`).
 - Cross-checked against NIST SHAKE-256 KATs and 1,000,000 PQClean-generated signatures with zero failures.
@@ -48,6 +49,14 @@ The trade-off is 1024 bytes of account data instead of 897 bytes (about
 127 bytes extra rent per account). Anything that gets verified multiple times
 recoups that cost easily in saved compute.
 
+For runtime preparation, `prepare_pubkey()`'s `const` form would `panic!` on a
+malformed wire pubkey — fine at compile time (becomes a build error), but
+unhelpful at runtime where you want to surface the error and reject the
+instruction. Use `try_prepare_pubkey()` (or the equivalent
+`TryFrom<Falcon512Pubkey>` / `TryFrom<&Falcon512Pubkey>` impls) for the
+runtime path — it returns `Result<Falcon512PreparedPubkey, ProgramError>`
+with `Err(InvalidArgument)` on header / coefficient / trailing-bit issues.
+
 ```rust
 use solana_falcon512::{
     Falcon512PreparedPubkey, Falcon512Pubkey, Falcon512Signature,
@@ -55,7 +64,11 @@ use solana_falcon512::{
 };
 
 // On registration: prepare once, write the 1024-byte form into the account.
-let prepared = Falcon512Pubkey::try_from(&pk_wire_bytes[..])?.prepare_pubkey();
+// Either of these forms works:
+let pk = Falcon512Pubkey::try_from(&pk_wire_bytes[..])?;
+let prepared: Falcon512PreparedPubkey = (&pk).try_into()?;        // TryFrom
+// or, equivalently:
+let prepared = pk.try_prepare_pubkey()?;                            // method
 account_data.copy_from_slice(prepared.as_bytes());
 
 // On verify: borrow the prepared pubkey directly out of account data — no
@@ -103,19 +116,35 @@ signature.verify_with_prepared(message, &PREPARED_PUBKEY)
 | Falcon-1024                            | ❌        |
 | Sign / keygen                          | ❌ (verify only — generate keys with PQClean / `pqcrypto-falcon`) |
 
-### Prepared pubkey wire format
+### Prepared pubkey: a blockchain-specific optimisation
 
-`Falcon512PreparedPubkey::as_bytes` / `from_bytes` use a stable
-**1024-byte little-endian `[u16; 512]`** layout: each coefficient is the
-forward-NTT of `h` pre-multiplied by `N⁻¹ mod Q`, then narrowed to u16
-(every value fits in 14 bits since `Q < 2^14`). Folding `N⁻¹` into the
-prepared form lets the runtime skip the per-verify `1/N` inverse-NTT
-scaling pass.
+A standard Falcon verifier sees each pubkey once and discards it — there's
+no point caching intermediate state. On a blockchain, the same pubkey is
+verified against many signatures over its lifetime and you pay rent for
+storage, so the economics flip: it pays to bake the deterministic-from-`h`
+work into account data and skip it on every verify.
 
-This format is **not interoperable** with other Falcon implementations'
-"NTT-form" pubkeys — those typically store `NTT(h)` without the `N⁻¹`
-factor and as u32. If you serialise a prepared pubkey here, you must read
-it back with this crate.
+Three transformations baked into `Falcon512PreparedPubkey`:
+
+1. **Decode + forward NTT** of `h`, eliminating the per-verify 14-bit
+   unpacking and 9-level NTT (~95k CUs saved per verify).
+2. **Pre-fold `N⁻¹ mod q`** into each coefficient. The inverse NTT
+   normally ends with a `× (1/N)` scalar pass; pre-folding lets the
+   runtime skip it. `inv_NTT(prepared · NTT(s2)) = (h · s2 · N) · N⁻¹ =
+   h · s2`.
+3. **Narrow `u32 → u16`**. NTT coefficients are `< q < 2^14`, so u16 is
+   enough — halves on-chain rent (1024 bytes vs 2048) at zero CU cost
+   (SBF `ldxh` costs the same as `ldxw`).
+
+The wire format (1024-byte little-endian `[u16; 512]`) is **specific to
+this crate**: other Falcon implementations' NTT-form pubkeys store
+`NTT(h)` without `N⁻¹` and as u32, so they won't round-trip. That's
+intentional. The 897-byte standard wire pubkey is still the
+interoperability boundary — accept it via [`Falcon512Pubkey::try_from`],
+prepare once with [`Falcon512Pubkey::try_prepare_pubkey`] (or the `const`
+panicking [`Falcon512Pubkey::prepare_pubkey`] for compile-time keys), and
+store the result. The 127-byte rent overhead (1024 vs 897) amortises over
+many verifications throughout the lifetime of the pubkey.
 
 ## Benchmarks
 
@@ -123,27 +152,38 @@ Measured via Mollusk SVM, default optimised build (`lto = "fat"`,
 `opt-level = 3`, `codegen-units = 1`), with the entrypoint borrowing the
 signature in place via `Falcon512Signature::from_ref`:
 
-| Path                                 | CUs      |
-| ------------------------------------ | -------- |
-| `verify_with_prepared` (success)     | ~196k    |
-| `verify_with_prepared` (rejection)   | ~196k    |
-| `verify` (raw pubkey)                | ~280k    |
+| Path                                 | CUs            |
+| ------------------------------------ | -------------- |
+| `verify_with_prepared` (success)     | ~173k–183k     |
+| `verify_with_prepared` (rejection)   | ~173k–183k     |
+| `verify` (raw pubkey)                | ~270k          |
 
-`set_compute_unit_limit(210_000)` is a safe budget for the prepared path.
+The CU range for `verify_with_prepared` reflects per-signature variance
+in `hash_to_point`: each Falcon signature embeds a fresh random nonce, and
+SHAKE-256 rejection sampling in `hash_to_point` consumes a variable number
+of permutations depending on how many `< 5q` candidates land in each
+absorbed block (typically 8–10 permutations, ~95% of the variance). The
+algorithm work is identical; only the keccak count differs. A safe
+compute-unit budget for the prepared path is
+`set_compute_unit_limit(195_000)`.
 
 Notable points along the optimisation curve (start of the journey vs. now,
 `verify_with_prepared`):
 
-| Stage                                                  | CUs      |
-| ------------------------------------------------------ | -------- |
-| Naive port                                             | ~283k    |
-| u64-throughout NTT butterflies                         | 265k     |
-| `assert_unchecked` for SBF bounds-check elision        | 248k     |
+| Stage                                                                        | CUs      |
+| ---------------------------------------------------------------------------- | -------- |
+| Naive port                                                                   | ~283k    |
+| u64-throughout NTT butterflies                                               | 265k     |
+| `assert_unchecked` for SBF bounds-check elision                              | 248k     |
 | Lazy-reduction (drop intermediate `% q` where the next mul·zeta·% q absorbs) | 222k     |
-| Fuse inv-NTT last level with L2-norm loop              | 213k     |
-| Pre-fold `N_INV` into prepared pubkey                  | 209k     |
-| Lazy-`t` at last forward NTT level                     | 196k     |
-| Zero-copy `from_ref` for signature in entrypoint       | **196k** |
+| Fuse inv-NTT last level with L2-norm loop                                    | 213k     |
+| Pre-fold `N_INV` into prepared pubkey                                        | 209k     |
+| Lazy-`t` at last forward NTT level                                           | 196k     |
+| Zero-copy `from_ref` for signature in entrypoint                             | 196k     |
+| chi-row + chi-row-iota Keccak layout                                         | 195k     |
+| Bertoni 6-lane lane-complementing                                            | 187k     |
+| In-place chi-row + 10 cell-saves (no `B[25]` scratch)                        | 183k     |
+| `#[inline(always)]` on hot helpers (`ntt_levels_after_first`, etc.)          | **183k** |
 
 ## Project layout
 

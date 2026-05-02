@@ -38,6 +38,7 @@ pub fn decode_pubkey_u32(buf: &[u8], h: &mut [u32; N]) -> bool {
     true
 }
 
+#[inline(always)]
 pub fn decompress_signature(buf: &[u8], s2: &mut [i16; N]) -> bool {
     // Accumulator is u64 so the per-byte shift-in (`acc << 8 | byte`) and the
     // windowed extract (`acc >> acc_len`) can use native SBF u64 arithmetic

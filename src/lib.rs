@@ -4,8 +4,10 @@
 //! signatures only, header byte `0x39`). The crate is `no_std`, allocation
 //! free, and all heavy work — pubkey decoding, NTT, SHAKE-256, signature
 //! decompression — is hand-written. On Solana SBF a single verify costs
-//! roughly 255–290k compute units depending on the message length and whether
-//! the pubkey is precomputed via [`Falcon512Pubkey::prepare_pubkey`].
+//! roughly **173k–183k compute units** with a prepared pubkey (the spread
+//! is per-signature variance in `hash_to_point`'s SHAKE-256 rejection
+//! sampling) or ~270k with a raw wire pubkey via
+//! [`Falcon512Pubkey::prepare_pubkey`] / [`Falcon512Pubkey::try_prepare_pubkey`].
 //!
 //! [FN-DSA / Falcon]: https://falcon-sign.info
 //!
@@ -161,7 +163,9 @@ impl Falcon512Pubkey {
     /// coefficient, or non-zero trailing bits). When invoked in const
     /// context this becomes a compile-time error — exactly what you want
     /// if the pubkey is baked into the binary. For untrusted runtime
-    /// pubkeys, prefer [`Falcon512Signature::verify`] which never panics.
+    /// pubkeys, prefer [`Self::try_prepare_pubkey`] which returns
+    /// `Result<_, ProgramError>` instead of panicking, or
+    /// [`Falcon512Signature::verify`] which never panics.
     pub const fn prepare_pubkey(&self) -> Falcon512PreparedPubkey {
         let bytes = &self.0;
         assert!(bytes[0] == PUBKEY_HEADER, "invalid pubkey header");
@@ -206,6 +210,60 @@ impl Falcon512Pubkey {
             k += 1;
         }
         Falcon512PreparedPubkey(packed)
+    }
+
+    /// Runtime variant of [`Self::prepare_pubkey`] that surfaces malformed
+    /// pubkeys as `Err(ProgramError::InvalidArgument)` instead of panicking.
+    ///
+    /// Use this when the pubkey comes from an untrusted source at runtime
+    /// (a Solana account, an instruction argument, off-chain data, etc.).
+    /// The work performed is identical to `prepare_pubkey` — same decode
+    /// + forward NTT + `N_INV` fold — only the error path differs.
+    ///
+    /// `prepare_pubkey` (panicking, `const`) is preferred when the pubkey is
+    /// known at compile time, since the work runs at build time and any
+    /// failure becomes a compile error.
+    pub fn try_prepare_pubkey(&self) -> Result<Falcon512PreparedPubkey, ProgramError> {
+        let bytes = &self.0;
+        if bytes[0] != PUBKEY_HEADER {
+            return Err(ProgramError::InvalidArgument);
+        }
+
+        let mut h = [0u32; N];
+        if !codec::decode_pubkey_u32(&bytes[1..], &mut h) {
+            return Err(ProgramError::InvalidArgument);
+        }
+
+        ntt::ntt(&mut h);
+        let n_inv = ntt::N_INV as u64;
+        let q = Q as u64;
+        let mut packed = [0u16; N];
+        for (i, &slot) in h.iter().enumerate() {
+            packed[i] = (slot as u64 * n_inv % q) as u16;
+        }
+        Ok(Falcon512PreparedPubkey(packed))
+    }
+}
+
+impl TryFrom<Falcon512Pubkey> for Falcon512PreparedPubkey {
+    type Error = ProgramError;
+
+    /// Decode + forward-NTT the wire pubkey into the runtime "prepared" form,
+    /// surfacing malformed input as `Err(InvalidArgument)`. Same work as
+    /// [`Falcon512Pubkey::try_prepare_pubkey`].
+    fn try_from(value: Falcon512Pubkey) -> Result<Self, Self::Error> {
+        value.try_prepare_pubkey()
+    }
+}
+
+impl TryFrom<&Falcon512Pubkey> for Falcon512PreparedPubkey {
+    type Error = ProgramError;
+
+    /// Borrowed-input version of [`TryFrom<Falcon512Pubkey>`]: useful when
+    /// the wire pubkey already lives in account data and you don't want to
+    /// move/copy it just to prepare.
+    fn try_from(value: &Falcon512Pubkey) -> Result<Self, Self::Error> {
+        value.try_prepare_pubkey()
     }
 }
 
