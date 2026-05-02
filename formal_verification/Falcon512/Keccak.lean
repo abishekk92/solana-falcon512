@@ -92,13 +92,13 @@ def absorb : List UInt8 → SpongeState → SpongeState
 
 /-- §1. Empty input is the identity. Smoke test for the toolchain wiring. -/
 theorem absorb_nil (s : SpongeState) : absorb [] s = s := by
-  sorry
+  rfl
 
 /-- §2. Single-byte absorb is exactly one `absorbByte`. Step lemma used
     by the associativity proof. -/
 theorem absorb_singleton (b : UInt8) (s : SpongeState) :
     absorb [b] s = absorbByte b s := by
-  sorry
+  rfl
 
 /-- §3. **Sponge absorb is associative over byte concatenation.**
 
@@ -115,11 +115,15 @@ theorem absorb_singleton (b : UInt8) (s : SpongeState) :
     proptest. Proof: induction on `a`. -/
 theorem absorb_append (a b : List UInt8) (s : SpongeState) :
     absorb (a ++ b) s = absorb b (absorb a s) := by
-  sorry
+  induction a generalizing s with
+  | nil => rfl
+  | cons x xs ih => simp [absorb, ih]
 
 /-- Convenience: chunked absorb sequence equals one absorb of the join. -/
 theorem absorb_concat (chunks : List (List UInt8)) (s : SpongeState) :
     absorb chunks.flatten s = chunks.foldl (fun s' c => absorb c s') s := by
-  sorry
+  induction chunks generalizing s with
+  | nil => rfl
+  | cons c cs ih => simp [List.flatten, absorb_append, ih]
 
 end Falcon512.Spec.Keccak
