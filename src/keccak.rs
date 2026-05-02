@@ -377,7 +377,9 @@ mod tests {
                 x
             }
             fn fill(&mut self, buf: &mut [u8]) {
-                for slot in buf.iter_mut() { *slot = self.next() as u8; }
+                for slot in buf.iter_mut() {
+                    *slot = self.next() as u8;
+                }
             }
         }
         let mut rng = Rng(0xDEAD_BEEF_CAFE_F00D);
@@ -431,7 +433,9 @@ mod tests {
             // Random total input length 0..=500.
             let total = (next() % 501) as usize;
             let mut input = vec![0u8; total];
-            for slot in input.iter_mut() { *slot = next() as u8; }
+            for slot in input.iter_mut() {
+                *slot = next() as u8;
+            }
 
             // Split into 1..=8 random absorb chunks.
             let n_chunks = ((next() % 8) + 1) as usize;

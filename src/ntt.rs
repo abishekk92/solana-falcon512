@@ -90,9 +90,7 @@ const _: () = assert!(LAZY_OFFSET_GS >= 256 * (Q as u64)); // ≥ max v
 pub(crate) const T_OFFSET_FUSED: u64 = (Q as u64) * (1u64 << 31);
 const _: () = assert!(T_OFFSET_FUSED % (Q as u64) == 0); // spec-preserving
 // ≥ worst-case t = (8·Q + T_OFFSET_LAZY_T) · (Q − 1).
-const _: () = assert!(
-    T_OFFSET_FUSED >= (8 * (Q as u64) + T_OFFSET_LAZY_T) * (Q as u64 - 1)
-);
+const _: () = assert!(T_OFFSET_FUSED >= (8 * (Q as u64) + T_OFFSET_LAZY_T) * (Q as u64 - 1));
 
 /// Offset for `last_level_fused_norm` — large enough to absorb unreduced
 /// `new_hi ≤ 512·Q²`, and big enough that LLVM-SBF can't infer the subtract
@@ -102,9 +100,7 @@ const _: () = assert!(BIG_Q_FUSED_NORM % (Q as u64) == 0); // spec-preserving
 // ≥ worst-case new_lo = 2 · 256·Q.
 const _: () = assert!(BIG_Q_FUSED_NORM >= 512 * (Q as u64));
 // ≥ worst-case new_hi = (256·Q + LAZY_OFFSET_GS) · (Q − 1) = 512·Q · (Q − 1).
-const _: () = assert!(
-    BIG_Q_FUSED_NORM >= (256 * (Q as u64) + LAZY_OFFSET_GS) * (Q as u64 - 1)
-);
+const _: () = assert!(BIG_Q_FUSED_NORM >= (256 * (Q as u64) + LAZY_OFFSET_GS) * (Q as u64 - 1));
 // Adding c (< Q) to BIG_Q can't overflow u64.
 const _: () = assert!(BIG_Q_FUSED_NORM <= u64::MAX - (Q as u64));
 // Exceeds u32::MAX so LLVM-SBF can't fold the subtract into u32 arithmetic.
@@ -193,8 +189,14 @@ pub(crate) const fn fused_norm_step(
     let v = buf_hi as u64;
     let new_lo = u + v;
     let new_hi = (u + LAZY_OFFSET_GS - v) * zeta;
-    let raw_lo = ((c_lo as u64).wrapping_add(BIG_Q_FUSED_NORM).wrapping_sub(new_lo)) % q;
-    let raw_hi = ((c_hi as u64).wrapping_add(BIG_Q_FUSED_NORM).wrapping_sub(new_hi)) % q;
+    let raw_lo = ((c_lo as u64)
+        .wrapping_add(BIG_Q_FUSED_NORM)
+        .wrapping_sub(new_lo))
+        % q;
+    let raw_hi = ((c_hi as u64)
+        .wrapping_add(BIG_Q_FUSED_NORM)
+        .wrapping_sub(new_hi))
+        % q;
     let s1c_lo = if raw_lo > half_q { q - raw_lo } else { raw_lo };
     let s1c_hi = if raw_hi > half_q { q - raw_hi } else { raw_hi };
     let s2_lo = s2_lo as i64;
@@ -238,8 +240,7 @@ macro_rules! ct_butterfly {
 // `% Q` is unchanged) to keep `u + offset - t` non-negative.
 macro_rules! ct_butterfly_lazy_t {
     ($r:ident, $j:expr, $len:expr, $zeta:expr) => {{
-        let (lo, hi) =
-            ct_butterfly_lazy_t_step($r[$j] as u64, $r[$j + $len] as u64, $zeta);
+        let (lo, hi) = ct_butterfly_lazy_t_step($r[$j] as u64, $r[$j + $len] as u64, $zeta);
         $r[$j] = lo as u32;
         $r[$j + $len] = hi as u32;
     }};
@@ -281,8 +282,7 @@ macro_rules! gs_butterfly {
 // variant — ~1.8k CU across 7 levels × 256 butterflies on the inverse path.
 macro_rules! gs_butterfly_lazy {
     ($r:ident, $j:expr, $len:expr, $zeta:expr) => {{
-        let (lo, hi) =
-            gs_butterfly_lazy_step($r[$j] as u64, $r[$j + $len] as u64, $zeta);
+        let (lo, hi) = gs_butterfly_lazy_step($r[$j] as u64, $r[$j + $len] as u64, $zeta);
         $r[$j] = lo as u32;
         $r[$j + $len] = hi as u32;
     }};
@@ -821,10 +821,10 @@ mod tests {
     // Kernel-correctness proptests.
     // The Kani harnesses verify *safety* (no overflow, output ranges). They do
     // NOT verify algebraic correctness — `assert_eq!` over u64 mod-arithmetic
-    // equivalence hangs Z3 on the wider kernels. The proptests below close
+    // equivalence hangs Z3 on the wider kernels. The proptests below reduce
     // that gap by random-sampling each kernel against a non-wrapping spec
-    // reference: any drift between the production kernel and the spec is
-    // caught with high probability over thousands of iterations.
+    // reference: many drifts between the production kernel and the spec would
+    // be caught with high probability over thousands of iterations.
     // ========================================================================
 
     use proptest::prelude::*;

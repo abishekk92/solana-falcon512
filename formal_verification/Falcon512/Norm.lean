@@ -9,9 +9,9 @@
 
   The whole-pipeline equality (`last_level_fused_norm` Rust function ≡
   unfused composition) is **not** proved here. That would require a Lean
-  model of the N-element loop. It is operationally validated by the
-  `fused_norm_step_matches_spec` proptest in `src/ntt.rs` and the
-  PQClean differential.
+  model of the N-element loop. It is operationally checked by the
+  `fused_norm_step_matches_spec` proptest in `src/ntt.rs` and, when
+  ignored host tests are run, the PQClean differential.
 -/
 
 import Falcon512.Defs
@@ -128,9 +128,9 @@ theorem norm_check_semantics (norm : Nat) :
     The whole-pipeline equality (`last_level_fused_norm` Rust function ≡
     unfused composition) is **not** proved here — it would require lifting
     these per-element identities through the explicit N-element loop in
-    `src/ntt.rs`. That whole-pipeline equality is operationally validated
-    by the proptests (`fused_norm_step_matches_spec` in `src/ntt.rs`) and
-    the differential vs PQClean. -/
+    `src/ntt.rs`. That whole-pipeline equality is checked operationally
+    by the proptests (`fused_norm_step_matches_spec` in `src/ntt.rs`) and,
+    when ignored host tests are run, the differential vs PQClean. -/
 theorem fused_norm_offsets_vanish_mod_q :
     Q ∣ BIG_Q_FUSED_NORM ∧ Q ∣ LAZY_OFFSET_GS ∧
     (BIG_Q_FUSED_NORM : ZMod Q) = 0 ∧ (LAZY_OFFSET_GS : ZMod Q) = 0 := by

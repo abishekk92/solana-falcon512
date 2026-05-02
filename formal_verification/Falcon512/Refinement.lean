@@ -20,12 +20,12 @@
        — `lazy_offset_same_mod`
 
   Whole-array composition (the Rust functions `ntt`, `inv_ntt`,
-  `last_level_fused_norm`, `fused_step_kernel`) is verified
-  operationally — by the kernel-vs-spec proptests in `src/ntt.rs` and
-  the PQClean differential — not in Lean. That division is intentional
-  per the project-level scope: Lean checks the math of each
-  optimization; the Rust loops are checked by composition tests on
-  real inputs.
+  `last_level_fused_norm`, `fused_step_kernel`) is checked
+  operationally — by the kernel-vs-spec proptests in `src/ntt.rs` and,
+  when ignored host tests are run, the PQClean differential — not in
+  Lean. That division is intentional per the project-level scope: Lean
+  checks the math of each optimization; the Rust loops are checked by
+  composition tests on real inputs.
 -/
 
 import Falcon512.Defs
@@ -206,13 +206,13 @@ theorem lazy_offset_same_mod (u v zeta : Nat)
 -- Composing the per-optimization lemmas
 -- ============================================================================
 -- Each Rust optimization above is proven mod-Q-preserving at the butterfly
--- or single-coefficient level. The full pipeline is a sequential composition
--- of these per-element steps over the polynomial array; since `% Q` is
--- congruence-preserving and the final L2-norm decision depends only on
--- mod-Q values, the composed pipeline agrees with the clean pipeline on
--- accept/reject. We do not state the array-level composition theorem here —
--- it would require lifting the per-element lemmas through the explicit
--- N-element loops in `ntt.rs`/`codec.rs` and is left to the Rust-side
--- soak + differential tests to validate operationally.
+-- or single-coefficient level. The intended pipeline argument is that a
+-- sequential composition of these steps over the polynomial array preserves
+-- the clean mod-Q values, and the final L2-norm decision depends only on
+-- those values. We do not state or prove that array-level composition
+-- theorem here; it would require lifting the per-element lemmas through the
+-- explicit N-element loops in `ntt.rs`/`codec.rs`. Rust-side proptests,
+-- soak tests, and differential tests provide operational evidence for that
+-- loop-level composition.
 
 end Falcon512.Refinement

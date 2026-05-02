@@ -106,12 +106,8 @@ const _: () = assert!(FALCON_512_PUBKEY_LEN == 1 + (N * 14) / 8);
 //   slots the total fits u64.
 // - L2_BOUND must be reachable (i.e., < the worst-case total) so the
 //   verifier's `<= L2_BOUND` test isn't trivially true.
-const _: () = assert!(
-    ((Q as u64 / 2) * (Q as u64 / 2) + 2047u64 * 2047) * (N as u64) < u64::MAX
-);
-const _: () = assert!(
-    L2_BOUND < ((Q as u64 / 2) * (Q as u64 / 2) + 2047u64 * 2047) * (N as u64)
-);
+const _: () = assert!(((Q as u64 / 2) * (Q as u64 / 2) + 2047u64 * 2047) * (N as u64) < u64::MAX);
+const _: () = assert!(L2_BOUND < ((Q as u64 / 2) * (Q as u64 / 2) + 2047u64 * 2047) * (N as u64));
 
 /// Wire-encoded Falcon-512 public key (header byte `0x09` + 14-bit-packed
 /// polynomial `h ∈ Z_q[x] / (x^512 + 1)`).
@@ -685,8 +681,8 @@ mod miri_unsafe_paths {
         let pk = Falcon512Pubkey::from(*PK_BYTES);
         let prepared = pk.prepare_pubkey();
         let bytes = prepared.as_bytes(); // exercises another transparent cast
-        let borrowed = Falcon512PreparedPubkey::try_from_slice(bytes)
-            .expect("prepared bytes must validate");
+        let borrowed =
+            Falcon512PreparedPubkey::try_from_slice(bytes).expect("prepared bytes must validate");
         // Use it: verify against the borrowed form too.
         let sig: &Falcon512Signature = Falcon512Signature::from_ref(SIG_BYTES);
         assert!(sig.verify_with_prepared(MESSAGE, borrowed));

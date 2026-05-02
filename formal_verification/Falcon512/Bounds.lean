@@ -11,11 +11,12 @@
   This file does NOT prove that the lazy invariants themselves hold
   level-by-level over the actual NTT loop. That structural fact — i.e.,
   "after K applications of `ct_butterfly_lazy_t_step`, each coefficient
-  is in fact bounded by (K+1)·Q" — is operationally validated by the
+  is in fact bounded by (K+1)·Q" — is checked operationally by the
   proptests in `src/ntt.rs::tests::proptest!` (each kernel matches a
-  non-wrapping spec on random inputs in its declared range) and the
-  PQClean differential. The lemmas here are the "if the invariant
-  holds, the arithmetic is safe" half of the picture.
+  non-wrapping spec on random inputs in its declared range) and, when
+  ignored host tests are run, the PQClean differential. The lemmas here
+  are the "if the invariant holds, the arithmetic is safe" half of the
+  picture.
 -/
 
 import Falcon512.Defs
@@ -30,7 +31,7 @@ open Falcon512.Spec
 
 /-- Given the lazy-CT invariant `r ≤ (K+1)·Q` for `K ≤ 9`, the product
     `r * zeta` (with `zeta < Q`) fits in u64. The level-bound hypothesis
-    is taken as given; it is operationally validated by the kernel-vs-
+    is taken as given; it is checked operationally by the kernel-vs-
     spec proptests in `src/ntt.rs`. -/
 theorem ct_product_fits_u64 (r zeta : Nat) (K : Nat)
     (hr : r ≤ (K + 1) * Q)
@@ -47,7 +48,7 @@ theorem ct_product_fits_u64 (r zeta : Nat) (K : Nat)
 
 /-- Given the lazy-CT invariant `a ≤ (K+1)·Q` for `K ≤ 9`, the sum `a + t`
     (with `t < Q`) fits in u32. As above, the invariant itself is
-    operationally validated. -/
+    checked operationally. -/
 theorem ct_sum_fits_u32 (a t : Nat) (K : Nat)
     (ha : a ≤ (K + 1) * Q)
     (ht : t < Q)

@@ -13,11 +13,11 @@
 //! cap) live separately in `host-tests/tests/constants_match_spec.rs`,
 //! since they require the `pqcrypto-falcon` dev-dep.
 
+use crate::ntt::{BIG_Q_FUSED_NORM, LAZY_OFFSET_GS, T_OFFSET_FUSED, T_OFFSET_LAZY_T};
 use crate::{
     FALCON_512_PUBKEY_LEN, FALCON_512_SIGNATURE_LEN, L2_BOUND, N, NONCE_LEN, PUBKEY_HEADER, Q,
     SIG_HEADER,
 };
-use crate::ntt::{BIG_Q_FUSED_NORM, LAZY_OFFSET_GS, T_OFFSET_FUSED, T_OFFSET_LAZY_T};
 
 /// Polynomial degree N = 512 — the "512" in Falcon-512.
 /// Ring is Z_q[x] / (x^512 + 1).

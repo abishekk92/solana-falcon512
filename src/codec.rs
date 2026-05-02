@@ -271,14 +271,21 @@ mod adversarial {
     // ------------------------------------------------------------------
     struct Rng(u64);
     impl Rng {
-        fn new(seed: u64) -> Self { Self(seed | 1) }
+        fn new(seed: u64) -> Self {
+            Self(seed | 1)
+        }
         fn next_u64(&mut self) -> u64 {
             let mut x = self.0;
-            x ^= x << 13; x ^= x >> 7; x ^= x << 17;
-            self.0 = x; x
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
         }
         fn fill(&mut self, buf: &mut [u8]) {
-            for slot in buf.iter_mut() { *slot = self.next_u64() as u8; }
+            for slot in buf.iter_mut() {
+                *slot = self.next_u64() as u8;
+            }
         }
     }
 
@@ -293,7 +300,14 @@ mod adversarial {
         idx: usize,
     }
     impl<'a> BitWriter<'a> {
-        fn new(buf: &'a mut [u8]) -> Self { Self { buf, acc: 0, acc_len: 0, idx: 0 } }
+        fn new(buf: &'a mut [u8]) -> Self {
+            Self {
+                buf,
+                acc: 0,
+                acc_len: 0,
+                idx: 0,
+            }
+        }
         fn push(&mut self, bits: u64, n: u32) {
             // n must be <= 56 to keep acc + n bits within u64.
             assert!(n <= 56);
@@ -367,9 +381,24 @@ mod adversarial {
         // SHAKE-256 rate. After absorb(nonce=40) the position is 40; absorb of
         // msg of these lengths puts pos at boundary points before finalize.
         let interesting = [
-            0usize, 1, 7, 8, 9, 95, 96, 97,   // < one rate
-            136 - 40, 137 - 40, 200, 271, 272, 273, // multi-block
-            500, 1000, 4096, 8192,            // bulk-phase exercise
+            0usize,
+            1,
+            7,
+            8,
+            9,
+            95,
+            96,
+            97, // < one rate
+            136 - 40,
+            137 - 40,
+            200,
+            271,
+            272,
+            273, // multi-block
+            500,
+            1000,
+            4096,
+            8192, // bulk-phase exercise
         ];
         for &msg_len in interesting.iter() {
             let nonce = [0xABu8; 40];
@@ -422,7 +451,9 @@ mod adversarial {
         let mut w = BitWriter::new(out);
         for &v in s2.iter() {
             let abs_v = (v as i32).unsigned_abs();
-            if abs_v > 2047 { return false; }
+            if abs_v > 2047 {
+                return false;
+            }
             // Reject -0 at compression time (caller's responsibility usually,
             // but our test never produces it).
             assert!(!(v < 0 && abs_v == 0));
@@ -437,12 +468,16 @@ mod adversarial {
             }
             w.push(header, 8);
             // Unary tail: `high` zero bits then a single 1.
-            if high > 0 { w.push(0, high); }
+            if high > 0 {
+                w.push(0, high);
+            }
             w.push(1, 1);
         }
         let consumed = w.finish();
         // Zero-pad the rest.
-        for slot in &mut out[consumed..] { *slot = 0; }
+        for slot in &mut out[consumed..] {
+            *slot = 0;
+        }
         true
     }
 
@@ -453,12 +488,15 @@ mod adversarial {
         for iter in 0..10_000 {
             let mut s2 = [0i16; N];
             for slot in s2.iter_mut() {
-                let m = (rng.next_u64() % 128) as i16;       // 0..=127
+                let m = (rng.next_u64() % 128) as i16; // 0..=127
                 let neg = (rng.next_u64() & 1) != 0 && m != 0; // never -0
                 *slot = if neg { -m } else { m };
             }
             let mut buf = [0u8; 625];
-            assert!(ref_compress(&s2, &mut buf), "iter {iter}: ref_compress unexpectedly failed");
+            assert!(
+                ref_compress(&s2, &mut buf),
+                "iter {iter}: ref_compress unexpectedly failed"
+            );
             let mut decoded = [0i16; N];
             assert!(
                 decompress_signature(&buf, &mut decoded),
@@ -490,17 +528,24 @@ mod adversarial {
                 };
                 let neg = (rng.next_u64() & 1) != 0 && m != 0;
                 *slot = if neg { -m } else { m };
-                if m.unsigned_abs() >= 128 { had_high_magnitude = true; }
+                if m.unsigned_abs() >= 128 {
+                    had_high_magnitude = true;
+                }
             }
             let mut buf = [0u8; 625];
-            if !ref_compress(&s2, &mut buf) { continue; }
+            if !ref_compress(&s2, &mut buf) {
+                continue;
+            }
             let mut decoded = [0i16; N];
             assert!(decompress_signature(&buf, &mut decoded));
             assert_eq!(decoded, s2);
             tested += 1;
         }
         assert!(tested >= 100, "only {tested} full-range compressions fit");
-        assert!(had_high_magnitude, "test didn't exercise high-magnitude (|v| >= 128) path");
+        assert!(
+            had_high_magnitude,
+            "test didn't exercise high-magnitude (|v| >= 128) path"
+        );
     }
 
     #[test]
@@ -566,7 +611,9 @@ mod adversarial {
             let header = (sign << 7) | (mag as u64 & 0x7F);
             w.push(header, 8);
             let high = mag >> 7;
-            if high > 0 { w.push(0, high); }
+            if high > 0 {
+                w.push(0, high);
+            }
             w.push(1, 1);
         }
         let _ = w.finish();
@@ -740,7 +787,9 @@ mod adversarial {
         let mut s2 = [0i16; N];
         assert!(decompress_signature(&buf, &mut s2));
         assert_eq!(s2[0], 2047);
-        for &v in &s2[1..] { assert_eq!(v, 0); }
+        for &v in &s2[1..] {
+            assert_eq!(v, 0);
+        }
     }
 
     #[test]
@@ -799,7 +848,9 @@ mod adversarial {
     #[test]
     fn pubkey_accepts_coefficient_q_minus_1() {
         let mut h = [0u32; N];
-        for slot in h.iter_mut() { *slot = Q - 1; }
+        for slot in h.iter_mut() {
+            *slot = Q - 1;
+        }
         let buf = pack_pubkey(&h);
         let mut decoded = [0u32; N];
         assert!(decode_pubkey_u32(&buf, &mut decoded));
@@ -883,7 +934,9 @@ mod adversarial {
         rng.fill(&mut data);
 
         let mut s1 = Shake256::new();
-        for &b in data.iter() { s1.absorb(&[b]); }
+        for &b in data.iter() {
+            s1.absorb(&[b]);
+        }
         s1.finalize();
         let mut o1 = [0u8; 100];
         s1.squeeze(&mut o1);
@@ -924,13 +977,13 @@ mod adversarial {
     }
 
     // ==================================================================
-    // 5. Canonicality — no two byte strings decompress to the same s2.
+    // 5. Canonicality — sampled Rust checks plus spec-level proof.
     //
-    // This is the strong malleability property: the decoder must accept
-    // *exactly one* byte representation per valid `s2`. The codec-rejection
-    // tests above (negative-zero, trailing-byte tail, residual-bit) close
-    // the documented Falcon footguns; the tests here press on canonicality
-    // structurally.
+    // The security goal is that the decoder accepts exactly one byte
+    // representation per valid `s2`. The codec-rejection tests above
+    // (negative-zero, trailing-byte tail, residual-bit) exercise the
+    // documented Falcon footguns; the tests here sample structural
+    // canonicality cases in the Rust implementation.
     //
     // Symbolic backing: the algorithmic canonicality is now machine-checked
     // in `formal_verification/Falcon512/Canonicality.lean`. The Lean spec
@@ -939,17 +992,18 @@ mod adversarial {
     //   (ii)  `encodeCoeff_prefix_free` — encodings are prefix-free
     //   (iii) `encodeAll_injective`    — the n-element pipeline injective
     //   (iv)  `append_replicate_false_inj` — zero-pad cancellation
-    //   (v)   `serializeFalcon_injective`  — full byte-level injectivity
+    //   (v)   `serializeFalcon_injective`  — abstract byte-level injectivity
     //
-    // The proptests below remain as the operational refinement check that
-    // the Rust `decompress_signature` implementation actually realizes that
-    // spec on random inputs. The Kani harness `decompress_one_coeff_matches_spec`
-    // (see `src/formal_verification.rs`) closes the per-coefficient half of
-    // the refinement bound-symbolically.
+    // The tests below remain as operational checks that the Rust
+    // `decompress_signature` implementation realizes that spec on sampled
+    // inputs. The Kani harness `decompress_one_coeff_matches_spec`
+    // (see `src/formal_verification.rs`) checks the single-coefficient
+    // implementation path bound-symbolically.
     // ==================================================================
 
-    /// Round-trip B (canonicality direction): for any valid `s2`, the
-    /// only byte string that decompresses to it is `ref_compress(s2)`.
+    /// Round-trip B (canonicality direction), sampled: for generated valid
+    /// `s2` values, sampled bit-flips of `ref_compress(s2)` must not
+    /// decompress back to the same `s2`.
     ///
     /// Tests this by checking that bit-flips of the canonical encoding
     /// either (a) fail to decompress, or (b) decompress to a different
@@ -1001,10 +1055,9 @@ mod adversarial {
         );
     }
 
-    /// Round-trip B (image-of-compress direction): for any `s2`, the
-    /// canonical encoding decompresses to `s2`, and recompressing gives
-    /// back the same byte string. This is the "decompress is the
-    /// left-inverse of compress" claim.
+    /// Round-trip B (image-of-compress direction), sampled: for generated
+    /// `s2` values whose canonical encoding fits, decompressing recovers
+    /// `s2`, and recompressing gives back the same byte string.
     #[test]
     fn decompress_is_left_inverse_of_compress() {
         let mut rng = Rng::new(0xF00D_BABE_C0FFEE);
@@ -1022,7 +1075,9 @@ mod adversarial {
                 *slot = if neg { -m } else { m };
             }
             let mut bytes1 = [0u8; 625];
-            if !ref_compress(&s2, &mut bytes1) { continue; }
+            if !ref_compress(&s2, &mut bytes1) {
+                continue;
+            }
             let mut decoded = [0i16; N];
             assert!(decompress_signature(&bytes1, &mut decoded), "iter {iter}");
             assert_eq!(decoded, s2);
@@ -1035,16 +1090,13 @@ mod adversarial {
         }
     }
 
-    /// Round-trip A enforced by length: any byte string accepted by
-    /// `decompress_signature` must equal `ref_compress` of its decoded
-    /// `s2`. This is the strict canonicality claim, tested by:
-    /// 1. Generate any 625-byte input b.
-    /// 2. If decompress(b) succeeds with output s2, then ref_compress(s2)
-    ///    must equal b.
+    /// Round-trip A enforced by length, sampled: accepted perturbed inputs
+    /// must equal `ref_compress` of their decoded `s2`.
     ///
-    /// Since random byte strings rarely decompress, we seed the search
-    /// with canonical encodings perturbed in ways unlikely to reject
-    /// (e.g. flipping a bit within the encoded portion of a coefficient).
+    /// Since random byte strings rarely decompress, this seeds the search
+    /// with canonical encodings and applies one random bit-flip. If a
+    /// tampered input still decompresses, the test checks that it is the
+    /// canonical encoding for the value it decoded to.
     #[test]
     fn accepted_input_equals_canonical_encoding() {
         let mut rng = Rng::new(0xCA11_AB1E_1234_5678);
@@ -1067,7 +1119,9 @@ mod adversarial {
             tampered[bit / 8] ^= 1u8 << (bit % 8);
 
             let mut decoded = [0i16; N];
-            if !decompress_signature(&tampered, &mut decoded) { continue; }
+            if !decompress_signature(&tampered, &mut decoded) {
+                continue;
+            }
             // Decompressed successfully — must be canonical for its decoded value.
             tested += 1;
             let mut recompressed = [0u8; 625];
@@ -1077,7 +1131,9 @@ mod adversarial {
                 "CANONICALITY: accepted byte string is not the canonical encoding of \
                  its decoded s2 — two distinct accepting representations"
             );
-            if decoded != s2 { diff_decoded += 1; }
+            if decoded != s2 {
+                diff_decoded += 1;
+            }
         }
         // Coverage telemetry — surfaces in `cargo test -- --nocapture`.
         // Deliberately NOT a hard assertion: the meaningful correctness

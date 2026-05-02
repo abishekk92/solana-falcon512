@@ -10,7 +10,7 @@
 
   The whole-array equality between Rust's `fused_last_fwd_mul_first_inv`
   and the three-pass unfused composition is **not** proved here — the
-  array-level loop is operationally validated by
+  array-level loop is checked operationally by
   `fused_step_kernel_matches_spec` in `src/ntt.rs`.
 -/
 

@@ -1,8 +1,8 @@
 /-
   Falcon512.Canonicality — Golomb-Rice signature encoding canonicality.
 
-  This file proves that the Falcon-512 signature byte payload is uniquely
-  determined by its coefficient sequence. The headline theorem is
+  This file proves that the abstract Falcon-512 signature byte payload is
+  uniquely determined by its coefficient sequence. The headline theorem is
   `serializeFalcon_injective`; everything else is the supporting chain.
 
   ┌─────────────────────────────────────────────────────────────────────┐
@@ -15,15 +15,15 @@
   │ append_replicate_false_inj  — zero-pad cancellation                 │
   │ wireBits_injective          — bit-level wire-format injectivity     │
   │ packBytes_injective         — MSB-first byte packing is injective   │
-  │ serializeFalcon_injective   — full byte-level signature canonicality│
+  │ serializeFalcon_injective   — abstract byte-level canonicality      │
   └─────────────────────────────────────────────────────────────────────┘
 
-  The Rust decoder's two padding-rejection rules in `decompress_signature`
-  (residual-bits-zero and trailing-zero-bytes) correspond exactly to
+  The abstract model mirrors the Rust decoder's two padding-rejection rules
+  in `decompress_signature` (residual-bits-zero and trailing-zero-bytes) by
   enforcing the canonical zero-pad characterized by
   `append_replicate_false_inj`. The Rust property tests under
-  `src/codec.rs::adversarial` remain as runtime cross-checks; this file
-  is the machine-checked formalization.
+  `src/codec.rs::adversarial` remain as implementation cross-checks; this
+  file is the machine-checked formalization of the model.
 -/
 
 import Mathlib.Data.List.Basic
@@ -291,12 +291,13 @@ theorem encodeFalcon_injective (cs1 cs2 : CoeffN)
 
 /-! ## §4. Wire format: zero-pad and byte packing
 
-The Rust verifier reads a fixed-length byte buffer, expands it MSB-first
-into a bit stream, and rejects any input where (a) leftover bits in the
-accumulator after consuming N coefficients are nonzero, or (b) trailing
-bytes past the consumed prefix are nonzero. Equivalently, the bit stream
-it accepts is `encodeAll cs ++ replicate _ false` for some zero-pad
-length determined by the byte boundary.
+The Rust decoder is intended to read a fixed-length byte buffer, expand it
+MSB-first into a bit stream, and reject any input where (a) leftover bits in
+the accumulator after consuming N coefficients are nonzero, or (b) trailing
+bytes past the consumed prefix are nonzero. The abstract model captures the
+corresponding canonical shape as
+`encodeAll cs ++ replicate _ false` for some zero-pad length determined by
+the byte boundary.
 
 This section formalizes that view in two steps:
 
@@ -501,16 +502,16 @@ theorem packBytes_injective {bits1 bits2 : List Bool}
 
 /-! ## §5. Falcon-512 byte-level signature canonicality
 
-The headline result. The byte payload accepted by the Rust verifier is
-exactly `serializeFalcon cs sigBytes`; equal byte payloads imply equal
-coefficient sequences. -/
+The headline result for the abstract serializer: equal serialized byte
+payloads imply equal coefficient sequences. Rust-level acceptance is checked
+separately by Kani and property tests in `src/`. -/
 
 /-- The byte-level wire format: `wireBits` MSB-packed into bytes.
     `sigBytes` is the fixed signature byte length (e.g. 666 for Falcon-512). -/
 def serializeFalcon (cs : CoeffN) (sigBytes : Nat) : List Nat :=
   packBytes (wireBits cs (8 * sigBytes))
 
-/-- **Full byte-level canonicality.** Distinct length-N coefficient
+/-- **Abstract byte-level canonicality.** Distinct length-N coefficient
     sequences produce distinct byte streams of any sufficient fixed
     length. The two `≤` hypotheses say the encoding fits in the byte
     buffer; in production, `sigBytes` is chosen large enough by the
