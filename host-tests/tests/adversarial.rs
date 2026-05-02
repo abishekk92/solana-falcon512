@@ -192,6 +192,62 @@ fn finding_prepare_pubkey_panics_on_malformed_runtime_input() {
     );
 }
 
+/// `try_prepare_pubkey` is the fallible runtime sibling of `prepare_pubkey`.
+/// It must accept any valid PQClean-generated pubkey and produce a prepared
+/// form byte-equal to what the panicking `prepare_pubkey` produces.
+#[test]
+fn try_prepare_pubkey_accepts_valid_pubkey() {
+    let msg = b"try_prepare_pubkey valid path";
+    let (pk_bytes, _) = sign(msg);
+    let pk = Falcon512Pubkey::from(pk_bytes);
+
+    let prepared_panicking = pk.clone().prepare_pubkey();
+    let prepared_fallible = pk.try_prepare_pubkey().expect("valid pubkey");
+    assert_eq!(
+        prepared_panicking.as_bytes(),
+        prepared_fallible.as_bytes(),
+        "fallible and panicking paths produced different prepared pubkeys"
+    );
+}
+
+/// Wrong header byte: the panicking path crashes; the fallible path returns
+/// `Err(InvalidArgument)`.
+#[test]
+fn try_prepare_pubkey_rejects_bad_header() {
+    let msg = b"try_prepare_pubkey bad header";
+    let (mut pk_bytes, _) = sign(msg);
+    pk_bytes[0] ^= 0xFF; // any non-0x09 byte
+    let pk = Falcon512Pubkey::from(pk_bytes);
+
+    let result = pk.try_prepare_pubkey();
+    assert!(
+        result.is_err(),
+        "try_prepare_pubkey accepted a malformed header"
+    );
+}
+
+/// Out-of-range coefficient (≥ Q): the same fixture that crashes
+/// `prepare_pubkey()` (pinned by `finding_prepare_pubkey_panics_on_malformed_runtime_input`)
+/// is rejected gracefully by the fallible path.
+#[test]
+fn try_prepare_pubkey_rejects_out_of_range_coefficient() {
+    let msg = b"try_prepare_pubkey out-of-range coeff";
+    let (mut pk_bytes, _) = sign(msg);
+
+    // Same construction as `finding_prepare_pubkey_panics_*`: set the first
+    // 14-bit-packed coefficient to 0x3FFF (16383) which is >= Q (12289).
+    pk_bytes[1] = 0xFF;
+    pk_bytes[2] |= 0b1111_1100;
+
+    let pk = Falcon512Pubkey::from(pk_bytes);
+
+    let result = pk.try_prepare_pubkey();
+    assert!(
+        result.is_err(),
+        "try_prepare_pubkey accepted a coefficient >= Q"
+    );
+}
+
 /// Empty-message edge case: nonce is 40 bytes, msg is 0 bytes. SHAKE
 /// finalize position is exactly 40 (mid-lane in lane 5). Verifies the
 /// finalize path handles this without producing a divergent c[].
