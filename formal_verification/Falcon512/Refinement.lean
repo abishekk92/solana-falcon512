@@ -11,7 +11,7 @@
     2. Lazy-`t` butterfly (skip `% Q` on `t` at the last forward level)
        — `lazy_t_preserves_mod`
     3. Fused last-fwd + pointwise-mul + first-inv
-       — `fused_is_algebraically_identical`
+       — `Falcon512.Spec.Fused.fused_equiv_zmod`
     4. Fused norm with `BIG_Q_FUSED_NORM = Q << 23` offset
        — `big_q_offset_same_mod`
     5. Unreduced hash-to-point output (`c[i]` stored up to `5·Q − 1`)
@@ -84,22 +84,11 @@ theorem lazy_t_preserves_mod (h a b z : Nat) :
 -- Clean: three separate passes over the array
 -- Fused: one pass computing all three in registers
 --
--- Proven equivalent in ZMod Q (Fused.lean, via `ring`):
---   pLow + pHigh = h0*(a + b*z) + h1*(a - b*z)
---   (pLow - pHigh) * z_inv = (h0*(a+b*z) - h1*(a-b*z)) * z_inv
-
-/-- The fused step is algebraically identical to three separate steps
-    in the ring ZMod Q. This is the core refinement for optimization 3. -/
-theorem fused_is_algebraically_identical (a b z z_inv h0 h1 : ZMod Q) :
-    let t := b * z
-    let sLo := a + t
-    let sHi := a - t
-    let pLo := h0 * sLo
-    let pHi := h1 * sHi
-    -- Fused computes the same expressions, just in one pass
-    pLo + pHi = h0 * (a + b * z) + h1 * (a - b * z) ∧
-    (pLo - pHi) * z_inv = (h0 * (a + b * z) - h1 * (a - b * z)) * z_inv := by
-  constructor <;> ring
+-- Algebraic equivalence is proved in `Falcon512.Spec.Fused.fused_equiv_zmod`
+-- (this file imports `Falcon512.NTT`, which transitively brings in `Defs`;
+-- the Fused proof is one ring-step over ZMod Q):
+--   pLow + pHigh                = h0*(a + b*z) + h1*(a - b*z)
+--   (pLow - pHigh) * z_inv      = (h0*(a+b*z) - h1*(a-b*z)) * z_inv
 
 -- ============================================================================
 -- Optimization 4: Fused last-inv + norm

@@ -681,8 +681,8 @@ pub fn last_level_fused_norm(buf: &[u32; N], c: &[u16; N], s2: &[i16; N], bound:
     norm <= bound
 }
 
-// Standalone full inverse NTT, only used by unit tests (round-trip and
-// schoolbook-multiplication checks). Production calls
+// Standalone full inverse NTT, only used by unit tests (the scalar-reference
+// differential and the schoolbook-multiplication proptest). Production calls
 // `fused_last_fwd_mul_first_inv` followed by `inv_ntt_main_levels`.
 //
 // Production's `inv_ntt_main_levels` is intentionally unscaled — the `1/N`
@@ -761,60 +761,148 @@ pub fn fused_last_fwd_mul_first_inv(buf: &mut [u32; N], h_pk_ntt: &[u16; N]) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn ntt_round_trip() {
-        let mut a = [0u32; N];
-        for (i, slot) in a.iter_mut().enumerate() {
-            *slot = ((i * 17 + 3) as u32) % Q;
+    fn reference_ntt(input: [u32; N]) -> [u32; N] {
+        let q = Q as u64;
+        let mut r = input;
+        let mut k: usize = 1;
+        let mut len = N / 2;
+
+        while len > 0 {
+            let mut start = 0;
+            while start < N {
+                let zeta = ZETAS[k] as u64;
+                k += 1;
+                for j in start..start + len {
+                    let u = r[j] as u64 % q;
+                    let v = r[j + len] as u64 % q;
+                    let t = v * zeta % q;
+                    r[j] = ((u + t) % q) as u32;
+                    r[j + len] = ((u + q - t) % q) as u32;
+                }
+                start += 2 * len;
+            }
+            len /= 2;
         }
-        let original = a;
-        ntt(&mut a);
-        inv_ntt(&mut a);
-        assert_eq!(a, original);
+
+        r
+    }
+
+    fn reference_inv_ntt(input: [u32; N]) -> [u32; N] {
+        let q = Q as u64;
+        let mut r = input;
+        let mut len = 1;
+
+        while len < N {
+            let groups = N / (2 * len);
+            for i in 0..groups {
+                let zeta = INV_ZETAS[groups + i] as u64;
+                let start = 2 * i * len;
+                for j in start..start + len {
+                    let u = r[j] as u64 % q;
+                    let v = r[j + len] as u64 % q;
+                    r[j] = ((u + v) % q) as u32;
+                    r[j + len] = ((u + q - v) * zeta % q) as u32;
+                }
+            }
+            len *= 2;
+        }
+
+        let n_inv = N_INV as u64;
+        for slot in r.iter_mut() {
+            *slot = (*slot as u64 * n_inv % q) as u32;
+        }
+        r
     }
 
     #[test]
-    fn ntt_multiplication_matches_schoolbook() {
-        // Random-ish polynomials a, b in Z_q. Compute a*b via NTT and via schoolbook
-        // negacyclic mul; results must match.
-        let mut a = [0u32; N];
-        let mut b = [0u32; N];
-        for i in 0..N {
-            a[i] = ((i * 31 + 7) as u32) % Q;
-            b[i] = ((i * 19 + 11) as u32) % Q;
+    fn ntt_and_inv_ntt_match_scalar_reference() {
+        fn next(seed: &mut u64) -> u64 {
+            let mut x = *seed;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            *seed = x;
+            x
         }
 
-        // Schoolbook negacyclic
-        let mut c_school = [0i64; N];
-        #[allow(clippy::needless_range_loop)] // index used into both `a` and `b` simultaneously
-        for i in 0..N {
-            for j in 0..N {
-                let prod = (a[i] as i64) * (b[j] as i64);
-                let k = i + j;
-                if k < N {
-                    c_school[k] += prod;
-                } else {
-                    c_school[k - N] -= prod;
-                }
+        let mut cases = vec![[0u32; N], [Q - 1; N]];
+
+        let mut patterned = [0u32; N];
+        for (i, slot) in patterned.iter_mut().enumerate() {
+            *slot = ((i * 17 + (i >> 1) * 31 + 3) as u32) % Q;
+        }
+        cases.push(patterned);
+
+        let mut seed = 0x243F_6A88_85A3_08D3;
+        for _ in 0..64 {
+            let mut poly = [0u32; N];
+            for slot in poly.iter_mut() {
+                *slot = (next(&mut seed) % Q as u64) as u32;
             }
-        }
-        let mut c_school_q = [0u32; N];
-        for i in 0..N {
-            let v = c_school[i].rem_euclid(Q as i64) as u32;
-            c_school_q[i] = v;
+            cases.push(poly);
         }
 
-        let mut a_ntt = a;
-        let mut b_ntt = b;
-        ntt(&mut a_ntt);
-        ntt(&mut b_ntt);
-        let mut prod = [0u32; N];
-        for i in 0..N {
-            prod[i] = (a_ntt[i] as u64 * b_ntt[i] as u64 % Q as u64) as u32;
-        }
-        inv_ntt(&mut prod);
+        for (case, input) in cases.into_iter().enumerate() {
+            let mut optimized_ntt = input;
+            ntt(&mut optimized_ntt);
+            let reference_ntt = reference_ntt(input);
+            assert_eq!(
+                optimized_ntt, reference_ntt,
+                "case {case}: optimized NTT diverged from scalar reference"
+            );
 
-        assert_eq!(prod, c_school_q);
+            let mut optimized_inv = optimized_ntt;
+            inv_ntt(&mut optimized_inv);
+            let reference_inv = reference_inv_ntt(reference_ntt);
+            assert_eq!(
+                optimized_inv, reference_inv,
+                "case {case}: optimized inverse NTT diverged from scalar reference"
+            );
+            assert_eq!(
+                optimized_inv, input,
+                "case {case}: inverse NTT did not recover the input"
+            );
+        }
+    }
+
+    #[test]
+    fn signed_ntt_path_matches_canonical_ntt() {
+        fn next(seed: &mut u64) -> u64 {
+            let mut x = *seed;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            *seed = x;
+            x
+        }
+
+        let mut seed = 0x1319_8A2E_0370_7344;
+        for case in 0..64 {
+            let mut signed = [0i16; N];
+            let mut canonical = [0u32; N];
+            for i in 0..N {
+                let v = (next(&mut seed) % 4095) as i16 - 2047;
+                signed[i] = v;
+                canonical[i] = if v < 0 {
+                    (Q as i32 + v as i32) as u32
+                } else {
+                    v as u32
+                };
+            }
+
+            let mut from_signed = [0u32; N];
+            ntt_main_levels_from_signed(&mut from_signed, &signed);
+            ntt_last_level(&mut from_signed);
+            for slot in from_signed.iter_mut() {
+                *slot = (*slot as u64 % Q as u64) as u32;
+            }
+
+            ntt(&mut canonical);
+            assert_eq!(
+                from_signed, canonical,
+                "case {case}: signed NTT path diverged from canonical NTT"
+            );
+        }
     }
 
     // ========================================================================
@@ -923,6 +1011,62 @@ mod tests {
                 + (s2_lo_i * s2_lo_i + s2_hi_i * s2_hi_i) as u64;
 
             prop_assert_eq!(kernel, spec);
+        }
+    }
+
+    // Random-polynomial differential against schoolbook negacyclic mul. This
+    // is the only test that catches drift in top-level NTT loop bounds, the
+    // twiddle index, or final-level handling — the kernel proptests above
+    // verify each butterfly in isolation, and the scalar reference test
+    // shares twiddle order with the optimized path. This stresses the full
+    // pipeline (forward NTT → pointwise → inverse NTT) on random inputs.
+    // Each case runs a 512×512 = 262144-multiply schoolbook product, so cases
+    // are kept low; 64 random pairs is enough to flush out structural drift
+    // without adding seconds to the unit-test pass.
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn ntt_mul_matches_schoolbook_random(
+            a in prop::collection::vec(0u32..Q, N..=N),
+            b in prop::collection::vec(0u32..Q, N..=N),
+        ) {
+            let mut a_arr = [0u32; N];
+            let mut b_arr = [0u32; N];
+            a_arr.copy_from_slice(&a);
+            b_arr.copy_from_slice(&b);
+
+            // Schoolbook negacyclic c = a * b in Z_q[x]/(x^N + 1).
+            let mut c_school = [0i64; N];
+            #[allow(clippy::needless_range_loop)]
+            for i in 0..N {
+                for j in 0..N {
+                    let prod = (a_arr[i] as i64) * (b_arr[j] as i64);
+                    let k = i + j;
+                    if k < N {
+                        c_school[k] += prod;
+                    } else {
+                        c_school[k - N] -= prod;
+                    }
+                }
+            }
+            let mut c_school_q = [0u32; N];
+            for i in 0..N {
+                c_school_q[i] = c_school[i].rem_euclid(Q as i64) as u32;
+            }
+
+            // NTT pipeline: forward, pointwise, inverse.
+            let mut a_ntt = a_arr;
+            let mut b_ntt = b_arr;
+            ntt(&mut a_ntt);
+            ntt(&mut b_ntt);
+            let mut prod = [0u32; N];
+            for i in 0..N {
+                prod[i] = (a_ntt[i] as u64 * b_ntt[i] as u64 % Q as u64) as u32;
+            }
+            inv_ntt(&mut prod);
+
+            prop_assert_eq!(prod, c_school_q);
         }
     }
 }

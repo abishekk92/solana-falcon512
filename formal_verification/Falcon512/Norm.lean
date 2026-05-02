@@ -106,13 +106,7 @@ theorem lazy_offset_equiv_zero_zmod : (LAZY_OFFSET_GS : ZMod Q) = 0 := by
 -- Norm bound correctness
 -- ============================================================================
 
-theorem norm_exceeds_bound_rejects (norm : Nat) (h : norm > L2_BOUND) :
-    ¬(norm ≤ L2_BOUND) := by omega
-
 theorem l2_bound_positive : L2_BOUND > 0 := by unfold L2_BOUND; omega
-
-theorem norm_check_semantics (norm : Nat) :
-    (norm ≤ L2_BOUND) ↔ ¬(norm > L2_BOUND) := by omega
 
 -- ============================================================================
 -- Algebraic primitives the Rust fused-norm optimization relies on

@@ -43,27 +43,6 @@ theorem fused_equiv_zmod (a b z z_inv h0 h1 : ZMod Q) :
     (pLow - pHigh) * z_inv = (h0 * (a + b * z) - h1 * (a - b * z)) * z_inv := by
   constructor <;> ring
 
-/-- The full fused step (forward CT + pointwise mul + inverse GS) produces
-    the same result as performing each operation separately, when viewed
-    in ZMod Q. The conclusion is purely algebraic — `z_inv` is a free
-    parameter, so this lemma does **not** establish that `z_inv = z⁻¹`
-    (that's the caller's obligation). -/
-theorem fused_step_correct_zmod (a b z z_inv h0 h1 : ZMod Q) :
-    -- Forward CT butterfly
-    let t := b * z
-    let sLow := a + t
-    let sHigh := a - t
-    -- Pointwise multiply
-    let pLow := h0 * sLow
-    let pHigh := h1 * sHigh
-    -- Inverse GS butterfly
-    let result_lo := pLow + pHigh
-    let result_hi := (pLow - pHigh) * z_inv
-    -- The result is the same regardless of evaluation order
-    result_lo = h0 * (a + b * z) + h1 * (a - b * z) ∧
-    result_hi = (h0 * (a + b * z) - h1 * (a - b * z)) * z_inv := by
-  exact fused_equiv_zmod a b z z_inv h0 h1
-
 -- ============================================================================
 -- Nat-level consequence: mod Q absorbs intermediate reductions
 -- ============================================================================
@@ -74,16 +53,6 @@ theorem fused_step_correct_zmod (a b z z_inv h0 h1 : ZMod Q) :
 theorem nat_mul_mod_absorb (h x : Nat) :
     (h * x) % Q = (h * (x % Q)) % Q := by
   exact (Nat.mul_mod h x Q).symm ▸ by rw [Nat.mul_mod, Nat.mod_mod, ← Nat.mul_mod]
-
-/-- Variant: (h * (a + b)) % Q = (h * ((a + b) % Q)) % Q -/
-theorem nat_add_then_mul_mod (h a b : Nat) :
-    (h * (a + b)) % Q = (h * ((a + b) % Q)) % Q :=
-  nat_mul_mod_absorb h (a + b)
-
-/-- Adding k*Q doesn't change the residue mod Q. -/
-theorem nat_add_kq_mod (a k : Nat) :
-    (a + k * Q) % Q = a % Q :=
-  Nat.add_mul_mod_self_right a k Q
 
 /-- Subtracting via Q offset: (a + Q - b) % Q = (a + k*Q - b) % Q
     when b < Q and k ≥ 1. Both are ≡ a - b (mod Q). -/

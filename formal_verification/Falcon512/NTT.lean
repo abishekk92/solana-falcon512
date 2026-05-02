@@ -35,27 +35,6 @@ theorem psi_is_root : powQ PSI N = Q - 1 := by native_decide
 theorem psi_order_divides : powQ PSI (2 * N) = 1 := by native_decide
 
 -- ============================================================================
--- Modular distributivity helpers (used by Fused.lean and Norm.lean)
--- ============================================================================
-
-/-- (a * b) % q = ((a % q) * b) % q -/
-theorem mul_mod_left (a b q : Nat) (_hq : q > 0) :
-    (a * b) % q = ((a % q) * b) % q := by
-  conv_lhs => rw [Nat.mul_mod]
-  conv_rhs => rw [Nat.mul_mod, Nat.mod_mod]
-
-/-- (a * b) % q = (a * (b % q)) % q -/
-theorem mul_mod_right (a b q : Nat) (_hq : q > 0) :
-    (a * b) % q = (a * (b % q)) % q := by
-  conv_lhs => rw [Nat.mul_mod]
-  conv_rhs => rw [Nat.mul_mod, Nat.mod_mod]
-
-/-- Adding a multiple of q doesn't change the residue. -/
-theorem add_mul_mod (a k q : Nat) (_hq : q > 0) :
-    (a + k * q) % q = a % q := by
-  rw [Nat.add_mul_mod_self_right]
-
--- ============================================================================
 -- CT/GS butterfly inverse relationship
 -- ============================================================================
 
@@ -77,19 +56,11 @@ theorem ct_gs_inverse_zmod (a b z : ZMod Q)
 -- Full NTT round-trip scaling factor
 -- ============================================================================
 --
--- `ct_gs_inverse_zmod` above already establishes the per-level round-trip
--- (forward CT followed by inverse GS recovers `(2a, 2b)`). The full NTT
--- applies `log₂(N) = 9` levels, accumulating a factor of `2^9 = N`, which
--- is then cancelled by `N_INV` (pre-folded into the prepared pubkey).
-
-/-- After log₂(N) = 9 butterfly levels, the accumulated scaling factor
-    is 2^9 = 512 = N. Multiplying by N_INV recovers the original. -/
-theorem scaling_factor_correct :
-    (2^9 : Nat) = N := by unfold N; omega
-
-/-- N * N_INV ≡ 1 (mod Q), confirming the scaling cancels. -/
-theorem n_times_n_inv : (N * N_INV) % Q = 1 := by
-  unfold N N_INV Q; native_decide
+-- `ct_gs_inverse_zmod` above establishes the per-level round-trip (forward CT
+-- followed by inverse GS recovers `(2a, 2b)`). The full NTT applies log₂(N)=9
+-- levels, accumulating a factor of `2^9 = 512 = N`, cancelled by `N_INV`
+-- (pre-folded into the prepared pubkey). The cancellation `N_INV * N ≡ 1
+-- (mod Q)` is proved as `n_inv_correct` above.
 
 -- ============================================================================
 -- PSI is a primitive 2N-th root of unity in Z_q
