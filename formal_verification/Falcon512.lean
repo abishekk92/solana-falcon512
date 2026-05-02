@@ -35,3 +35,4 @@ import Falcon512.HashToPoint     -- 5·Q rejection bound is uniform-mod-Q (count
 import Falcon512.Canonicality    -- Abstract byte-level codec canonicality (`serializeFalcon_injective`)
 import Falcon512.Keccak          -- FIPS-202 SHAKE-256 sponge associativity (sorry — Aristotle target)
 import Falcon512.NTTIso          -- Negacyclic NTT ring isomorphism (sorry — Aristotle target)
+import Falcon512.Keccakf1600     -- Canonical FIPS-202 Keccak-f[1600] reference (sorry — structural lemmas)
