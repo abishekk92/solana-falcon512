@@ -36,7 +36,7 @@
 -/
 
 import Mathlib.Data.List.Basic
-import Mathlib.Data.Nat.Defs
+import Mathlib.Data.Nat.Basic
 
 namespace Falcon512.Spec.Keccak
 

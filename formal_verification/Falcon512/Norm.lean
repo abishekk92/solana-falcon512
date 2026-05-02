@@ -75,16 +75,16 @@ theorem sub_with_multiple_of_q (c x k : Nat)
   have hmod_cast : (↑(x % Q) : Int) = ↑x % ↑Q := by omega
   rw [hmod_cast]
   rw [show (↑c : Int) + ↑k * ↑Q - ↑x = (↑c - ↑x) + ↑k * ↑Q from by ring,
-      Int.add_mul_emod_self,
+      Int.add_mul_emod_self_right,
       show (↑c : Int) + ↑Q - ↑x % ↑Q = (↑c - ↑x % ↑Q) + 1 * ↑Q from by ring,
-      Int.add_mul_emod_self,
+      Int.add_mul_emod_self_right,
       show (↑c : Int) - ↑x = (↑c - ↑x % ↑Q) + (↑x % ↑Q - ↑x) from by ring]
   have : ↑x % (↑Q : Int) - ↑x = -(↑x / ↑Q) * ↑Q := by
     have := Int.emod_add_ediv (↑x : Int) (↑Q : Int)
     linarith
   rw [this, show (↑c : Int) - ↑x % ↑Q + -(↑x / ↑Q) * ↑Q =
     (↑c - ↑x % ↑Q) + -(↑x / ↑Q) * ↑Q from by ring,
-    Int.add_mul_emod_self]
+    Int.add_mul_emod_self_right]
 
 -- ============================================================================
 -- Norm computation equivalence in ZMod (algebraic core)

@@ -153,9 +153,9 @@ theorem unreduced_c_same_mod (w x big_q : Nat)
   have hmod_x : (↑(x % Q) : Int) = ↑x % ↑Q := by omega
   rw [hmod_w, hmod_x]
   rw [show (↑w : Int) + ↑Q * ↑k - ↑x = (↑w - ↑x) + ↑k * ↑Q from by ring,
-      Int.add_mul_emod_self,
+      Int.add_mul_emod_self_right,
       show (↑w : Int) % ↑Q + ↑Q * ↑k - ↑x % ↑Q = (↑w % ↑Q - ↑x % ↑Q) + ↑k * ↑Q from by ring,
-      Int.add_mul_emod_self]
+      Int.add_mul_emod_self_right]
   -- Now need: (↑w - ↑x) % ↑Q = (↑w % ↑Q - ↑x % ↑Q) % ↑Q
   rw [show (↑w : Int) - ↑x = (↑w % ↑Q - ↑x % ↑Q) + (↑w - ↑w % ↑Q - (↑x - ↑x % ↑Q)) from by ring]
   have hw_div : ↑w - ↑w % (↑Q : Int) = (↑w / ↑Q) * ↑Q := by
@@ -167,7 +167,7 @@ theorem unreduced_c_same_mod (w x big_q : Nat)
     hw_div, hx_div,
     show (↑w : Int) % ↑Q - ↑x % ↑Q + (↑w / ↑Q * ↑Q - ↑x / ↑Q * ↑Q) =
       (↑w % ↑Q - ↑x % ↑Q) + (↑w / ↑Q - ↑x / ↑Q) * ↑Q from by ring,
-    Int.add_mul_emod_self]
+    Int.add_mul_emod_self_right]
 
 -- ============================================================================
 -- Optimization 6: lazy_offset = 256*Q in inverse GS

@@ -27,7 +27,7 @@
 -/
 
 import Mathlib.Data.List.Basic
-import Mathlib.Data.Nat.Defs
+import Mathlib.Data.Nat.Basic
 import Mathlib.Tactic.Linarith
 import Mathlib.Tactic.Ring
 import Falcon512.Defs
@@ -314,7 +314,7 @@ private theorem encodeCoeff_getLast?_eq_some_true (c : Coeff) :
     (encodeCoeff c).getLast? = some true := by
   show ((c.sign :: lsb7Bits (c.mag % 128)) ++ List.replicate (c.mag / 128) false
         ++ [true]).getLast? = some true
-  exact List.getLast?_concat _
+  exact List.getLast?_concat
 
 private theorem encodeAll_ne_nil_of_ne_nil (cs : List Coeff) (h : cs ≠ []) :
     encodeAll cs ≠ [] := by
@@ -322,7 +322,7 @@ private theorem encodeAll_ne_nil_of_ne_nil (cs : List Coeff) (h : cs ≠ []) :
   | nil => exact absurd rfl h
   | cons c _ =>
     rw [encodeAll_cons]
-    exact fun heq => encodeCoeff_ne_nil c (List.append_eq_nil.mp heq).1
+    exact fun heq => encodeCoeff_ne_nil c (List.append_eq_nil_iff.mp heq).1
 
 private theorem encodeAll_getLast?_eq_some_true (cs : List Coeff) (h : cs ≠ []) :
     (encodeAll cs).getLast? = some true := by
@@ -399,7 +399,7 @@ theorem append_replicate_false_inj
       List.getLast_mem _
     have hf : (head :: tail).getLast (List.cons_ne_nil _ _) = false :=
       hdrop_all_false _ hlast_in
-    rw [List.getLast?_eq_getLast _ (List.cons_ne_nil _ _), hf] at hb2
+    rw [List.getLast?_eq_getLast (List.cons_ne_nil _ _), hf] at hb2
     exact (by decide : (true : Bool) ≠ false) (Option.some.inj hb2).symm
   have heq_bs : b1 = b2 := by rw [hsplit, hdrop_nil, List.append_nil]
   refine ⟨heq_bs, ?_⟩
