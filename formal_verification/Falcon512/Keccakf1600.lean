@@ -77,9 +77,13 @@ abbrev State : Type := Fin 25 → Nat
 def laneIdx (x y : Fin 5) : Fin 25 :=
   ⟨5 * y.val + x.val, by have := x.isLt; have := y.isLt; omega⟩
 
-/-- 64-bit left-rotation by `n` bits, where `n ∈ [0, 64)`. -/
+/-- 64-bit left-rotation by `n` bits, where `n ∈ [0, 64)`. Uses XOR
+    instead of OR for the halves; on u64-bounded lanes the two halves
+    don't overlap so OR ≡ XOR there, but the XOR form is provably
+    distributive over input XOR (`shiftLeft_xor_distrib` +
+    `xor_mod_two_pow` from core Lean) — needed for `theta_linear`. -/
 def rotL64 (lane n : Nat) : Nat :=
-  ((lane <<< n) ||| (lane >>> (64 - n))) % (2 ^ 64)
+  ((lane <<< n) ^^^ (lane >>> (64 - n))) % (2 ^ 64)
 
 /-- FIPS-202 ρ rotation offsets, indexed by `[x][y]`. Matches the
     `RHO` constant in `src/keccak.rs::tests::keccak_f1600_ref`. -/
@@ -153,16 +157,37 @@ def f1600 (rcTable : List Nat) (s : State) : State :=
 
 /-! ## Structural rungs (Aristotle targets) -/
 
+/-- `rotL64` distributes over `^^^` on its lane argument. Follows from
+    `Nat.shiftLeft_xor_distrib`, `Nat.shiftRight_xor_distrib`, and
+    `Nat.xor_mod_two_pow` (mod by `2^64` distributes over XOR since the
+    `mod` is a bit-mask). -/
+theorem rotL64_xor (a b n : Nat) :
+    rotL64 (a ^^^ b) n = rotL64 a n ^^^ rotL64 b n := by
+  unfold rotL64
+  rw [Nat.shiftLeft_xor_distrib, Nat.shiftRight_xor_distrib]
+  rw [show (a <<< n ^^^ b <<< n) ^^^ (a >>> (64 - n) ^^^ b >>> (64 - n)) =
+        (a <<< n ^^^ a >>> (64 - n)) ^^^ (b <<< n ^^^ b >>> (64 - n))
+        from by rw [Nat.xor_assoc, ← Nat.xor_assoc (b <<< n),
+                    Nat.xor_comm (b <<< n), Nat.xor_assoc, ← Nat.xor_assoc]]
+  exact Nat.xor_mod_two_pow
+
 /-- §1. **θ is XOR-linear.** Bitwise XOR distributes through θ:
-    `theta (s ⊕ t) = theta s ⊕ theta t` (pointwise). -/
+    `theta (s ⊕ t) i = theta s i ⊕ theta t i` for every lane index `i`.
+
+    Proof: unfold θ on both sides, observe that the column parities `cLeft`
+    and `cRight` are 5-fold XORs (so they distribute over per-lane XOR by
+    `Nat.xor_assoc` / `xor_comm`), and `rotL64` distributes by
+    `rotL64_xor` above. The remaining XOR rearrangement is bookkeeping. -/
 theorem theta_linear (s t : State) :
     ∀ i, theta (fun j => s j ^^^ t j) i = theta s i ^^^ theta t i := by
-  sorry
+  intro i
+  simp only [theta, rotL64_xor]
+  ac_rfl
 
 /-- §2. **ι touches only lane (0, 0).** For any `i ≠ 0`, `iota rc s i = s i`. -/
 theorem iota_only_lane_0 (rc : Nat) (s : State) (i : Fin 25) (h : i.val ≠ 0) :
     iota rc s i = s i := by
-  sorry
+  unfold iota; simp [h]
 
 /-- §3. **ρ rotates each lane in place.** For each index `i`, the resulting
     lane is `rotL64 (s i) (rhoOffset x y)` — no lane moves to a different
@@ -171,21 +196,26 @@ theorem rho_in_place (s : State) (i : Fin 25) :
     let x : Fin 5 := ⟨i.val % 5, by omega⟩
     let y : Fin 5 := ⟨i.val / 5, by have := i.isLt; omega⟩
     rho s i = rotL64 (s i) (rhoOffset x y) := by
-  sorry
+  rfl
 
-/-- The inverse of FIPS-202 π. From `(x, y) ↦ (y, (2x + 3y) % 5)`,
-    solving for `(x', y') = (y, (2x + 3y) % 5)` gives `(x, y) =
-    ((3·x' + 2·y') % 5, x')`. -/
+/-- The inverse of FIPS-202 π. The matrix M = [[0,1],[2,3]] over ℤ/5
+    has det 3, inverse 2, and adj M = [[3,4],[3,0]], giving
+    M⁻¹ = 2·adj M = [[1,3],[1,0]] (mod 5). So
+    π⁻¹: (x, y) ↦ ((x + 3y) % 5, x). -/
 def piInv (s : State) : State := fun i =>
   let x : Fin 5 := ⟨i.val % 5, by omega⟩
   let y : Fin 5 := ⟨i.val / 5, by have := i.isLt; omega⟩
-  let xSrc : Fin 5 := ⟨(3 * x.val + 2 * y.val) % 5, by omega⟩
+  let xSrc : Fin 5 := ⟨(x.val + 3 * y.val) % 5, by omega⟩
   let ySrc : Fin 5 := x
   s (laneIdx xSrc ySrc)
 
-/-- §4. **π is a permutation.** `piInv` is a left inverse of `pi`. -/
+/-- §4. **π is a permutation.** `piInv` is a left inverse of `pi`. The
+    proof is by case analysis on `Fin 25`: each of the 25 lane indices
+    reduces to a concrete arithmetic identity `(2*((x + 3y) % 5) + 3x) % 5 = y`
+    for the corresponding `(x, y)`, which closes by `decide`. -/
 theorem pi_left_inverse (s : State) : piInv (pi s) = s := by
-  sorry
+  funext i
+  fin_cases i <;> rfl
 
 /-- §5. **f1600 unfolds to 24 successive rounds.** Trivially true by
     definition; this lemma is the convenient elimination form for
