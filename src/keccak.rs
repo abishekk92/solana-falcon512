@@ -481,4 +481,63 @@ mod tests {
             );
         }
     }
+
+    /// Pins the `rate_lanes()` contract directly: bytes assembled from the
+    /// 17 returned lanes (little-endian per FIPS 202) must equal the bytes
+    /// produced by the per-byte `squeeze()` path over the same RATE-byte
+    /// window. The codec-side `hash_to_point` tests cover this transitively
+    /// via rejection sampling, but a direct test fails earlier with a clearer
+    /// signal — and protects any future caller of `rate_lanes()` outside
+    /// `hash_to_point`. Load-bearing for internal-state-representation
+    /// changes (e.g. Bertoni lane complementation): such optimizations are
+    /// only correct if `rate_lanes()` reads out the same byte values that
+    /// `squeeze()` would.
+    #[test]
+    fn rate_lanes_matches_squeeze() {
+        let inputs: &[&[u8]] = &[
+            b"",
+            b"abc",
+            &[0u8; 100],
+            &[0xff; 200],
+            &[0x5a; 271], // crosses RATE = 136 absorb boundary
+        ];
+
+        for input in inputs {
+            let mut via_lanes = Shake256::new();
+            via_lanes.absorb(input);
+            via_lanes.finalize();
+
+            let mut via_squeeze = Shake256::new();
+            via_squeeze.absorb(input);
+            via_squeeze.finalize();
+
+            // Three permutation blocks: covers the post-finalize block plus
+            // two further re-permutations after manual rate drains.
+            for block in 0..3 {
+                let lanes = via_lanes.rate_lanes();
+                assert_eq!(
+                    lanes.len(),
+                    17,
+                    "rate_lanes must expose 17 lanes (= RATE / 8)"
+                );
+                let mut from_lanes = [0u8; RATE];
+                for (i, lane) in lanes.iter().enumerate() {
+                    from_lanes[i * 8..i * 8 + 8].copy_from_slice(&lane.to_le_bytes());
+                }
+                via_lanes.permute();
+
+                // Squeeze the same RATE-byte window via the byte path. After
+                // exactly RATE bytes, `squeeze()` triggers an internal
+                // permute and resets pos — so both states stay in lockstep.
+                let mut from_squeeze = [0u8; RATE];
+                via_squeeze.squeeze(&mut from_squeeze);
+
+                assert_eq!(
+                    from_lanes, from_squeeze,
+                    "block {block}: rate_lanes() and squeeze() disagree (input_len={})",
+                    input.len()
+                );
+            }
+        }
+    }
 }
