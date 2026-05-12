@@ -33,7 +33,17 @@ import Falcon512.Norm            -- Per-element fused-norm primitives
 import Falcon512.Refinement      -- Per-element refinement lemmas for the six Rust optimisations
 import Falcon512.HashToPoint     -- 5·Q rejection bound is uniform-mod-Q (counting form)
 import Falcon512.Canonicality    -- Abstract byte-level codec canonicality (`serializeFalcon_injective`)
-import Falcon512.Keccak          -- FIPS-202 SHAKE-256 sponge associativity (sorry — Aristotle target)
-import Falcon512.NTTIso          -- Negacyclic NTT ring isomorphism (sorry — Aristotle target)
-import Falcon512.Keccakf1600     -- Canonical FIPS-202 Keccak-f[1600] reference (sorry — structural lemmas)
-import Falcon512.KeccakBertoni   -- Bertoni lane-complementation invariance (sorry — Aristotle target)
+import Falcon512.Keccak          -- FIPS-202 SHAKE-256 sponge associativity (proved)
+import Falcon512.NTTIso          -- Negacyclic NTT ring isomorphism (proved)
+import Falcon512.Keccakf1600     -- Canonical FIPS-202 Keccak-f[1600] reference (proved)
+import Falcon512.KeccakBertoni   -- Bertoni lane-complementation invariance: §1/§2/§3/§4/§6
+                                  -- proved unconditionally; §5/§7/§8 disproved (canonical
+                                  -- χ does NOT commute with applyMask CS_mask — counter-
+                                  -- example s ≡ 1, lane 4)
+import Falcon512.KeccakOptimized -- Bertoni-modified χ soundness: `optimized_f1600 = f1600`
+                                  -- for bounded states and round-constant tables. Mirrors
+                                  -- the entry-mask + 24 modified rounds + exit-mask
+                                  -- structure of src/keccak.rs::keccak_f1600. Per-row
+                                  -- mixed-Boolean χ rewrite verified via 9 per-lane
+                                  -- Boolean identities (Nat.testBit + 8-way case split),
+                                  -- composed by fin_cases over Fin 25.

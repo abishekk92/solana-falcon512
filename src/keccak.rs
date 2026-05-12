@@ -311,84 +311,240 @@ impl Shake256 {
     }
 }
 
+// =========================================================================
+// FIPS-202 §3.2 textbook reference. Used as the differential oracle for the
+// Bertoni-optimized `keccak_f1600` above (operational tests + Kani symbolic
+// equivalence harness). Visible to `tests` and `kani` builds only.
+// =========================================================================
+
+#[cfg(any(test, kani))]
+fn keccak_lfsr_next_bit(r: &mut u8) -> u64 {
+    let bit = (*r & 1) as u64;
+    if (*r & 0x80) != 0 {
+        *r = (*r << 1) ^ 0x71;
+    } else {
+        *r <<= 1;
+    }
+    bit
+}
+
+#[cfg(any(test, kani))]
+fn rc_if_bit_set(rc: &mut u64, bit: u64, position: usize) {
+    if bit != 0 {
+        *rc ^= 1u64 << position;
+    }
+}
+
+/// Derives the Keccak-f[1600] round constants using the FIPS 202 §3.2.5
+/// LFSR sequence instead of duplicating the literal table.
+#[cfg(any(test, kani))]
+pub(crate) fn spec_round_constants() -> [u64; 24] {
+    let mut constants = [0u64; 24];
+    let mut lfsr = 0x01u8;
+    for rc in &mut constants {
+        for j in 0..=6 {
+            rc_if_bit_set(rc, keccak_lfsr_next_bit(&mut lfsr), (1usize << j) - 1);
+        }
+    }
+    constants
+}
+
+/// Textbook Keccak-f[1600] (FIPS-202 §3.2, array form). Differential oracle
+/// for the production `keccak_f1600` above.
+#[cfg(any(test, kani))]
+pub(crate) fn keccak_f1600_ref(s: &mut [u64; 25]) {
+    const RHO: [[u32; 5]; 5] = [
+        [0, 36, 3, 41, 18],
+        [1, 44, 10, 45, 2],
+        [62, 6, 43, 15, 61],
+        [28, 55, 25, 21, 56],
+        [27, 20, 39, 8, 14],
+    ];
+
+    let round_constants = spec_round_constants();
+    for &rc in &round_constants {
+        let mut c = [0u64; 5];
+        for x in 0..5 {
+            c[x] = s[x] ^ s[x + 5] ^ s[x + 10] ^ s[x + 15] ^ s[x + 20];
+        }
+
+        let mut d = [0u64; 5];
+        for x in 0..5 {
+            d[x] = c[(x + 4) % 5] ^ c[(x + 1) % 5].rotate_left(1);
+        }
+        for y in 0..5 {
+            for x in 0..5 {
+                s[x + 5 * y] ^= d[x];
+            }
+        }
+
+        let mut b = [0u64; 25];
+        for y in 0..5 {
+            for x in 0..5 {
+                let dst_x = y;
+                let dst_y = (2 * x + 3 * y) % 5;
+                b[dst_x + 5 * dst_y] = s[x + 5 * y].rotate_left(RHO[x][y]);
+            }
+        }
+
+        for y in 0..5 {
+            for x in 0..5 {
+                s[x + 5 * y] =
+                    b[x + 5 * y] ^ ((!b[((x + 1) % 5) + 5 * y]) & b[((x + 2) % 5) + 5 * y]);
+            }
+        }
+
+        s[0] ^= rc;
+    }
+}
+
+/// **Kani symbolic refinement (full f1600)**: the Bertoni-optimized
+/// `keccak_f1600` equals the FIPS-202 textbook reference
+/// `keccak_f1600_ref` for every 1600-bit input state. Combined with
+/// `KeccakOptimized.optimized_eq_canonical` (Lean proof that the
+/// *abstract* Bertoni structure equals canonical FIPS Keccak-f[1600]),
+/// this closes the Rust ↔ FIPS gap end-to-end: the Lean argument
+/// removes the algebra trust, this Kani argument removes the
+/// hand-transcription-into-Rust trust.
+///
+/// This is the heavy harness: 1600-bit symbolic state × 24 rounds bit-
+/// blasts to a sizeable SAT instance. Run with `cargo kani --harness
+/// keccak_f1600_matches_clean_reference_symbolic`.
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(26)]
+fn keccak_f1600_matches_clean_reference_symbolic() {
+    let s: [u64; 25] = kani::any();
+    let mut s_opt = s;
+    let mut s_ref = s;
+    keccak_f1600(&mut s_opt);
+    keccak_f1600_ref(&mut s_ref);
+    assert_eq!(s_opt, s_ref);
+}
+
+// SMT solver A/B testing — recorded result, no harness retained.
+//
+// Tested Kani's z3 backend (`#[kani::solver(z3)]`) on both harnesses:
+//   * `chi_per_row_formulas_match_canonical` (5 symbolic u64s):
+//     cadical 0.78s vs z3 2.0s — cadical ~2.5× faster.
+//   * `keccak_f1600_matches_clean_reference_symbolic` (180k VCCs
+//     after slicing, 24-round symbolic unroll): z3 backend crashes
+//     with `map::at: key not found` during CBMC's SMT2 conversion,
+//     before z3 is invoked. CBMC integration bug at this scale,
+//     not a z3 capability issue.
+//
+// Conclusion: cadical is the correct backend here. Pure SAT after
+// bit-blasting beats SMT-BV theory for crypto-level bit-vector
+// problems, matching the general empirical pattern.
+
+/// **Kani lightweight per-row chi harness.** Verifies that each of the
+/// five Bertoni-modified chi rows in `keccak_f1600` (the actual
+/// substantive optimization) equals the canonical FIPS chi composed
+/// with the row's IN/OUT mask flips. Each row is 5 symbolic u64s and
+/// 5 Boolean identities — trivially fast for CBMC. Complements the
+/// 9-identity Lean proof in `Falcon512.KeccakOptimized.chi_id_1..9`
+/// by checking the same identities at the *u64* / Rust level instead
+/// of via `Nat.testBit` reasoning. Uses cadical (default SAT backend).
+#[cfg(kani)]
+#[kani::proof]
+fn chi_per_row_formulas_match_canonical() {
+    // 5 symbolic u64 lane values for a single row (post-θ,ρ,π).
+    let b0: u64 = kani::any();
+    let b1: u64 = kani::any();
+    let b2: u64 = kani::any();
+    let b3: u64 = kani::any();
+    let b4: u64 = kani::any();
+
+    // -------- Row 0: IN=(T,F,T,T,F) → b0,b2,b3 complemented; OUT={1,2} --------
+    {
+        // Logical (uncomplemented) values:
+        let big0 = !b0;  // IN T → stored b0 = !B0, so B0 = !b0
+        let big1 = b1;   // IN F
+        let big2 = !b2;  // IN T
+        let big3 = !b3;  // IN T
+        let big4 = b4;   // IN F
+        // Canonical chi outputs (logical):
+        let c0 = big0 ^ ((!big1) & big2);
+        let c1 = big1 ^ ((!big2) & big3);
+        let c2 = big2 ^ ((!big3) & big4);
+        let c3 = big3 ^ ((!big4) & big0);
+        let c4 = big4 ^ ((!big0) & big1);
+        // Bertoni-modified formulas from src/keccak.rs Row 0:
+        assert_eq!(b0 ^ (b1 | b2), c0);            // OUT[0] = F
+        assert_eq!(b1 ^ ((!b2) | b3), !c1);        // OUT[1] = T
+        assert_eq!(b2 ^ (b3 & b4), !c2);           // OUT[2] = T
+        assert_eq!(b3 ^ (b4 | b0), c3);            // OUT[3] = F
+        assert_eq!(b4 ^ (b0 & b1), c4);            // OUT[4] = F
+    }
+
+    // -------- Row 1: IN=(T,F,T,F,F) → b0,b2 complemented; OUT={8} (col 3) --
+    {
+        let big0 = !b0; let big1 = b1; let big2 = !b2;
+        let big3 = b3;  let big4 = b4;
+        let c0 = big0 ^ ((!big1) & big2);
+        let c1 = big1 ^ ((!big2) & big3);
+        let c2 = big2 ^ ((!big3) & big4);
+        let c3 = big3 ^ ((!big4) & big0);
+        let c4 = big4 ^ ((!big0) & big1);
+        assert_eq!(b0 ^ (b1 | b2), c0);
+        assert_eq!(b1 ^ (b2 & b3), c1);
+        assert_eq!((!b2) ^ b4 ^ (b3 & b4), c2);    // SPECIAL: NOT-eliminated form
+        assert_eq!(b3 ^ (b4 | b0), !c3);           // OUT[3] = T (CS lane 8)
+        assert_eq!(b4 ^ (b0 & b1), c4);
+    }
+
+    // -------- Row 2: IN=(T,F,T,F,F); OUT={12} (col 2) --------
+    {
+        let big0 = !b0; let big1 = b1; let big2 = !b2;
+        let big3 = b3;  let big4 = b4;
+        let c0 = big0 ^ ((!big1) & big2);
+        let c1 = big1 ^ ((!big2) & big3);
+        let c2 = big2 ^ ((!big3) & big4);
+        let c3 = big3 ^ ((!big4) & big0);
+        let c4 = big4 ^ ((!big0) & big1);
+        assert_eq!(b0 ^ (b1 | b2), c0);
+        assert_eq!(b1 ^ (b2 & b3), c1);
+        assert_eq!(b2 ^ b4 ^ (b3 & b4), !c2);      // OUT[2] = T (CS lane 12)
+        assert_eq!(b3 ^ !(b4 | b0), c3);
+        assert_eq!(b4 ^ (b0 & b1), c4);
+    }
+
+    // -------- Row 3: IN=(F,T,F,T,T) → b1,b3,b4 complemented; OUT={17} (col 2) --
+    {
+        let big0 = b0;  let big1 = !b1; let big2 = b2;
+        let big3 = !b3; let big4 = !b4;
+        let c0 = big0 ^ ((!big1) & big2);
+        let c1 = big1 ^ ((!big2) & big3);
+        let c2 = big2 ^ ((!big3) & big4);
+        let c3 = big3 ^ ((!big4) & big0);
+        let c4 = big4 ^ ((!big0) & big1);
+        assert_eq!(b0 ^ (b1 & b2), c0);
+        assert_eq!(b1 ^ (b2 | b3), c1);
+        assert_eq!(b2 ^ ((!b3) | b4), !c2);        // OUT[2] = T (CS lane 17)
+        assert_eq!((!b3) ^ (b4 & b0), c3);
+        assert_eq!(b4 ^ (b0 | b1), c4);
+    }
+
+    // -------- Row 4: IN=(T,F,F,T,F) → b0,b3 complemented; OUT={20} (col 0) --
+    {
+        let big0 = !b0; let big1 = b1; let big2 = b2;
+        let big3 = !b3; let big4 = b4;
+        let c0 = big0 ^ ((!big1) & big2);
+        let c1 = big1 ^ ((!big2) & big3);
+        let c2 = big2 ^ ((!big3) & big4);
+        let c3 = big3 ^ ((!big4) & big0);
+        let c4 = big4 ^ ((!big0) & big1);
+        assert_eq!(b0 ^ b2 ^ (b1 & b2), !c0);      // OUT[0] = T (CS lane 20)
+        assert_eq!(b1 ^ !(b2 | b3), c1);
+        assert_eq!(b2 ^ (b3 & b4), c2);
+        assert_eq!(b3 ^ (b4 | b0), c3);
+        assert_eq!(b4 ^ (b0 & b1), c4);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn keccak_lfsr_next_bit(r: &mut u8) -> u64 {
-        let bit = (*r & 1) as u64;
-        if (*r & 0x80) != 0 {
-            *r = (*r << 1) ^ 0x71;
-        } else {
-            *r <<= 1;
-        }
-        bit
-    }
-
-    // Derives the Keccak-f[1600] round constants using the FIPS 202, §3.2.5
-    // LFSR sequence instead of duplicating the literal table under test.
-    fn spec_round_constants() -> [u64; 24] {
-        let mut constants = [0u64; 24];
-        let mut lfsr = 0x01u8;
-        for rc in &mut constants {
-            for j in 0..=6 {
-                rc_if_bit_set(rc, keccak_lfsr_next_bit(&mut lfsr), (1usize << j) - 1);
-            }
-        }
-        constants
-    }
-
-    fn rc_if_bit_set(rc: &mut u64, bit: u64, position: usize) {
-        if bit != 0 {
-            *rc ^= 1u64 << position;
-        }
-    }
-
-    fn keccak_f1600_ref(s: &mut [u64; 25]) {
-        const RHO: [[u32; 5]; 5] = [
-            [0, 36, 3, 41, 18],
-            [1, 44, 10, 45, 2],
-            [62, 6, 43, 15, 61],
-            [28, 55, 25, 21, 56],
-            [27, 20, 39, 8, 14],
-        ];
-
-        let round_constants = spec_round_constants();
-        for &rc in &round_constants {
-            let mut c = [0u64; 5];
-            for x in 0..5 {
-                c[x] = s[x] ^ s[x + 5] ^ s[x + 10] ^ s[x + 15] ^ s[x + 20];
-            }
-
-            let mut d = [0u64; 5];
-            for x in 0..5 {
-                d[x] = c[(x + 4) % 5] ^ c[(x + 1) % 5].rotate_left(1);
-            }
-            for y in 0..5 {
-                for x in 0..5 {
-                    s[x + 5 * y] ^= d[x];
-                }
-            }
-
-            let mut b = [0u64; 25];
-            for y in 0..5 {
-                for x in 0..5 {
-                    let dst_x = y;
-                    let dst_y = (2 * x + 3 * y) % 5;
-                    b[dst_x + 5 * dst_y] = s[x + 5 * y].rotate_left(RHO[x][y]);
-                }
-            }
-
-            for y in 0..5 {
-                for x in 0..5 {
-                    s[x + 5 * y] =
-                        b[x + 5 * y] ^ ((!b[((x + 1) % 5) + 5 * y]) & b[((x + 2) % 5) + 5 * y]);
-                }
-            }
-
-            s[0] ^= rc;
-        }
-    }
 
     #[test]
     fn keccak_constants_match_spec() {

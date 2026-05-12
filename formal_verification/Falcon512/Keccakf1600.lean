@@ -114,15 +114,16 @@ def rho (s : State) : State := fun i =>
   let y : Fin 5 := ⟨i.val / 5, by have := i.isLt; omega⟩
   rotL64 (s i) (rhoOffset x y)
 
-/-- §3.2.3 π (pi): lane permutation `(x, y) ↦ (y, (2x + 3y) % 5)`. -/
+/-- §3.2.3 π (pi). FIPS-202: `A'[x, y, z] = A[(x + 3y) mod 5, x, z]` —
+    the value at output `(x, y)` comes from input `((x + 3y) % 5, x)`.
+    Matches `keccak_f1600_ref` in `src/keccak.rs::tests` (forward form:
+    input `(x, y)` → output `(y, (2x + 3y) % 5)`; the reverse-direction
+    formula `((x + 3y) % 5, x)` is the per-FIPS inverse). -/
 def pi (s : State) : State := fun i =>
   let x : Fin 5 := ⟨i.val % 5, by omega⟩
   let y : Fin 5 := ⟨i.val / 5, by have := i.isLt; omega⟩
-  let xSrc : Fin 5 := y
-  let ySrc : Fin 5 := ⟨(2 * x.val + 3 * y.val) % 5, by omega⟩
-  -- π(s)[x, y] = s[xSrc, ySrc] where (xSrc, ySrc) is chosen so the
-  -- inverse permutation is `(x', y') ↦ (y, 2x + 3y)`. The match here is
-  -- the convention used in `keccak_f1600_ref`.
+  let xSrc : Fin 5 := ⟨(x.val + 3 * y.val) % 5, by omega⟩
+  let ySrc : Fin 5 := x
   s (laneIdx xSrc ySrc)
 
 /-- §3.2.4 χ (chi): row-wise nonlinear `b ⊕ ((¬c) ∧ d)`. -/
@@ -192,15 +193,14 @@ theorem rho_in_place (s : State) (i : Fin 25) :
     rho s i = rotL64 (s i) (rhoOffset x y) := by
   rfl
 
-/-- The inverse of FIPS-202 π. The matrix M = [[0,1],[2,3]] over ℤ/5
-    has det 3, inverse 2, and adj M = [[3,4],[3,0]], giving
-    M⁻¹ = 2·adj M = [[1,3],[1,0]] (mod 5). So
-    π⁻¹: (x, y) ↦ ((x + 3y) % 5, x). -/
+/-- The inverse of FIPS-202 π. Given π's forward formula
+    `(x', y') = (y, (2x + 3y) % 5)`, the inverse maps output `(x, y)`
+    back via `(xSrc, ySrc) = (y, (2x + 3y) % 5)`. -/
 def piInv (s : State) : State := fun i =>
   let x : Fin 5 := ⟨i.val % 5, by omega⟩
   let y : Fin 5 := ⟨i.val / 5, by have := i.isLt; omega⟩
-  let xSrc : Fin 5 := ⟨(x.val + 3 * y.val) % 5, by omega⟩
-  let ySrc : Fin 5 := x
+  let xSrc : Fin 5 := y
+  let ySrc : Fin 5 := ⟨(2 * x.val + 3 * y.val) % 5, by omega⟩
   s (laneIdx xSrc ySrc)
 
 /-- §4. **π is a permutation.** `piInv` is a left inverse of `pi`. The
