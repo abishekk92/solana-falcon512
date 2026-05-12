@@ -10,7 +10,7 @@
 //!   - the PQClean reference (`crypto_sign/falcon-512/clean/`).
 //!
 //! PQClean cross-checks of the actual wire bytes (header byte, length
-//! cap) live separately in `host-tests/tests/constants_match_spec.rs`,
+//! cap) live separately in `host-tests/tests/pqclean_wire_format.rs`,
 //! since they require the `pqcrypto-falcon` dev-dep.
 
 use crate::ntt::{BIG_Q_FUSED_NORM, LAZY_OFFSET_GS, T_OFFSET_FUSED, T_OFFSET_LAZY_T};

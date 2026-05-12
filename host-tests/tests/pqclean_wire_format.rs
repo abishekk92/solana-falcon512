@@ -6,7 +6,8 @@
 //!
 //! The in-lib pins for `Q`, `N`, `L2_BOUND`, `NONCE_LEN`, `PUBKEY_HEADER`,
 //! `SIG_HEADER`, the wire-length equations, and the 5·Q rejection bound
-//! live in `src/constants_match_spec.rs` (gated `#[cfg(test)]`).
+//! live in `internal-tests/spec_pins.rs` (loaded into the lib via
+//! `#[cfg(test)] #[path]` from `src/lib.rs`).
 
 use pqcrypto_falcon::falcon512;
 use pqcrypto_traits::sign::{DetachedSignature, PublicKey};
